@@ -1,0 +1,171 @@
+import 'dart:io';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
+import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:image/image.dart' as img;
+import '../utils/constants.dart';
+
+class ImageService {
+  final ImagePicker _picker = ImagePicker();
+
+  /// 갤러리에서 이미지 선택
+  Future<String?> pickImage({ImageSource source = ImageSource.gallery}) async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: source,
+        maxWidth: 2048,
+        maxHeight: 2048,
+        imageQuality: 90,
+      );
+
+      if (image == null) return null;
+
+      // 임시 디렉토리에 복사
+      final tempDir = await getTemporaryDirectory();
+      final imageDir = Directory(
+        path.join(tempDir.path, AppConstants.imageCacheDir),
+      );
+      if (!await imageDir.exists()) {
+        await imageDir.create(recursive: true);
+      }
+
+      final fileName = path.basename(image.path);
+      final savedPath = path.join(imageDir.path, fileName);
+      await File(image.path).copy(savedPath);
+
+      return savedPath;
+    } catch (e) {
+      print('Error picking image: $e');
+      return null;
+    }
+  }
+
+  /// 이미지 파일 존재 확인
+  Future<bool> imageExists(String imagePath) async {
+    return await File(imagePath).exists();
+  }
+
+  /// 이미지 삭제
+  Future<bool> deleteImage(String imagePath) async {
+    try {
+      final file = File(imagePath);
+      if (await file.exists()) {
+        await file.delete();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      print('Error deleting image: $e');
+      return false;
+    }
+  }
+
+  /// 생성된 이미지를 갤러리에 저장
+  Future<bool> saveToGallery(String imagePath) async {
+    try {
+      // 권한 확인
+      if (Platform.isAndroid) {
+        final status = await Permission.storage.request();
+        if (!status.isGranted) {
+          return false;
+        }
+      }
+
+      final result = await ImageGallerySaver.saveFile(imagePath);
+      return result['isSuccess'] == true;
+    } catch (e) {
+      print('Error saving to gallery: $e');
+      return false;
+    }
+  }
+
+  /// 생성된 이미지 저장 디렉토리 가져오기
+  Future<String> getGeneratedImagesDirectory() async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final generatedDir = Directory(
+      path.join(appDir.path, AppConstants.generatedImagesDir),
+    );
+    if (!await generatedDir.exists()) {
+      await generatedDir.create(recursive: true);
+    }
+    return generatedDir.path;
+  }
+
+  /// 생성된 이미지 목록 가져오기
+  Future<List<String>> getGeneratedImages() async {
+    try {
+      final dir = await getGeneratedImagesDirectory();
+      final directory = Directory(dir);
+      if (!await directory.exists()) {
+        return [];
+      }
+
+      final files = directory
+          .listSync()
+          .where((entity) => entity is File)
+          .map((entity) => entity.path)
+          .where(
+            (path) =>
+                path.endsWith('.png') ||
+                path.endsWith('.jpg') ||
+                path.endsWith('.jpeg'),
+          )
+          .toList();
+
+      // 최신순 정렬
+      files.sort((a, b) {
+        final aTime = File(a).lastModifiedSync();
+        final bTime = File(b).lastModifiedSync();
+        return bTime.compareTo(aTime);
+      });
+
+      return files;
+    } catch (e) {
+      print('Error getting generated images: $e');
+      return [];
+    }
+  }
+
+  /// Auto Enhance: 밝기, 대비, 채도, 선명도 자동 조정
+  Future<String?> autoEnhance(String imagePath) async {
+    try {
+      // 이미지 로드
+      final imageBytes = await File(imagePath).readAsBytes();
+      img.Image? image = img.decodeImage(imageBytes);
+
+      if (image == null) {
+        throw Exception('이미지를 디코딩할 수 없습니다');
+      }
+
+      // 자동 보정 적용
+      // 1. 밝기 조정 (약간 밝게)
+      image = img.adjustColor(image, brightness: 1.1);
+
+      // 2. 대비 증가
+      image = img.adjustColor(image, contrast: 1.15);
+
+      // 3. 채도 증가
+      image = img.adjustColor(image, saturation: 1.2);
+
+      // 4. 선명도 향상 (unsharp mask 효과)
+      image = img.convolution(image, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0]);
+
+      // 결과 이미지 저장
+      final outputDir = await getGeneratedImagesDirectory();
+      final outputPath = path.join(
+        outputDir,
+        'enhanced_${DateTime.now().millisecondsSinceEpoch}.png',
+      );
+
+      final outputFile = File(outputPath);
+      await outputFile.writeAsBytes(img.encodePng(image));
+
+      return outputPath;
+    } catch (e) {
+      print('Error in auto enhance: $e');
+      rethrow;
+    }
+  }
+}
