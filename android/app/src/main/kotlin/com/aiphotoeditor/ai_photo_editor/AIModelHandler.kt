@@ -59,6 +59,15 @@ class AIModelHandler(private val context: Context) {
                 unloadModel(result)
             }
             
+            "removeBackground" -> {
+                val imagePath = call.argument<String>("imagePath")
+                    ?: run {
+                        result.error("INVALID_ARGUMENT", "Image path is required", null)
+                        return
+                    }
+                removeBackground(imagePath, result)
+            }
+            
             else -> {
                 result.notImplemented()
             }
@@ -157,6 +166,28 @@ class AIModelHandler(private val context: Context) {
         } catch (e: Exception) {
             result.error("UNLOAD_ERROR", "Error unloading model: ${e.message}", null)
         }
+    }
+
+    private fun removeBackground(imagePath: String, result: MethodChannel.Result) {
+        val inputImage = BitmapFactory.decodeFile(imagePath)
+            ?: run {
+                result.error("INVALID_IMAGE", "Could not decode image", null)
+                return
+            }
+
+        // TODO: MODNet TFLite 모델 로드 및 실행
+        // 1. MODNet TFLite 모델 로드 (별도 Interpreter 필요)
+        // 2. 이미지 전처리 (512x512로 리사이즈, 정규화 등)
+        // 3. 모델 실행하여 마스크 생성
+        // 4. 마스크를 사용하여 배경 제거
+        // 5. 결과 이미지 저장 및 경로 반환
+
+        Thread {
+            // 임시로 에러 반환 (실제 구현 필요)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                result.error("MODEL_NOT_LOADED", "MODNet model is not loaded. Please load the model first.", null)
+            }
+        }.start()
     }
 
     private fun loadModelFile(file: File): MappedByteBuffer {

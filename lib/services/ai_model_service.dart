@@ -3,7 +3,9 @@ import '../models/generation_config.dart';
 import '../utils/constants.dart';
 
 class AIModelService {
-  static const MethodChannel _channel = MethodChannel(AppConstants.platformChannelName);
+  static const MethodChannel _channel = MethodChannel(
+    AppConstants.platformChannelName,
+  );
 
   /// 모델 로드 상태 확인
   Future<bool> isModelLoaded() async {
@@ -52,7 +54,9 @@ class AIModelService {
   /// Inpainting (선택 영역 보정)
   Future<String?> inpaint(GenerationConfig config) async {
     if (config.inputImagePath == null || config.maskImagePath == null) {
-      throw ArgumentError('inputImagePath and maskImagePath are required for inpainting');
+      throw ArgumentError(
+        'inputImagePath and maskImagePath are required for inpainting',
+      );
     }
     try {
       final result = await _channel.invokeMethod<String>(
@@ -74,5 +78,21 @@ class AIModelService {
       print('Error unloading model: $e');
     }
   }
-}
 
+  /// Remove Background: MODNet을 사용한 배경 제거
+  Future<String?> removeBackground(String imagePath) async {
+    if (imagePath.isEmpty) {
+      throw ArgumentError('imagePath is required for background removal');
+    }
+    try {
+      final result = await _channel.invokeMethod<String>(
+        AppConstants.methodRemoveBackground,
+        {'imagePath': imagePath},
+      );
+      return result;
+    } catch (e) {
+      print('Error in remove background: $e');
+      rethrow;
+    }
+  }
+}

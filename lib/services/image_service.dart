@@ -6,9 +6,11 @@ import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image/image.dart' as img;
 import '../utils/constants.dart';
+import 'ai_model_service.dart';
 
 class ImageService {
   final ImagePicker _picker = ImagePicker();
+  final AIModelService _aiService = AIModelService();
 
   /// 갤러리에서 이미지 선택
   Future<String?> pickImage({ImageSource source = ImageSource.gallery}) async {
@@ -167,5 +169,10 @@ class ImageService {
       print('Error in auto enhance: $e');
       rethrow;
     }
+  }
+
+  /// Remove Background: 배경 제거 (MODNet AI 모델 사용)
+  Future<String?> removeBackground(String imagePath) async {
+    return await _aiService.removeBackground(imagePath);
   }
 }

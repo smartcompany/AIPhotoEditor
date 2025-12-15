@@ -293,6 +293,44 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _performRemoveBackground() async {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isGenerating = true;
+    });
+
+    try {
+      final resultPath = await _imageService.removeBackground(
+        _selectedImagePath!,
+      );
+
+      if (resultPath != null && mounted) {
+        _applyResultImage(resultPath);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('배경 제거가 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      } else {
+        _showError('배경 제거에 실패했습니다.');
+      }
+    } catch (e) {
+      _showError('오류 발생: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isGenerating = false;
+        });
+      }
+    }
+  }
+
   void _showAIToolsSheet() {
     showModalBottomSheet(
       context: context,
@@ -301,7 +339,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (context) => _AIToolsSheet(
         onRemoveBackground: () {
           Navigator.pop(context);
-          _startEditingMask();
+          _performRemoveBackground();
         },
         onEnhance: () {
           Navigator.pop(context);
