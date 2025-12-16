@@ -13,12 +13,13 @@ import UIKit
       binaryMessenger: controller.binaryMessenger
     )
     
-    aiModelChannel.setMethodCallHandler { [weak self] (call: FlutterMethodCall, result: @escaping FlutterResult) in
-      guard let self = self else { return }
-      
-      let handler = AIModelHandler()
-      handler.handle(call: call, result: result)
-    }
+    let progressChannel = FlutterEventChannel(
+      name: "com.aiphotoeditor/ai_model_progress",
+      binaryMessenger: controller.binaryMessenger
+    )
+    
+    let handler = AIModelHandler()
+    handler.setupChannels(methodChannel: aiModelChannel, eventChannel: progressChannel)
     
     GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)

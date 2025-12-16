@@ -4,7 +4,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:image/image.dart' as img;
 import '../utils/constants.dart';
 import 'ai_model_service.dart';
 
@@ -130,45 +129,24 @@ class ImageService {
     }
   }
 
-  /// Auto Enhance: 밝기, 대비, 채도, 선명도 자동 조정
+  /// Auto Enhance: Real-ESRGAN AI 모델을 사용한 이미지 자동 향상
   Future<String?> autoEnhance(String imagePath) async {
-    try {
-      // 이미지 로드
-      final imageBytes = await File(imagePath).readAsBytes();
-      img.Image? image = img.decodeImage(imageBytes);
+    return await _aiService.autoEnhance(imagePath);
+  }
 
-      if (image == null) {
-        throw Exception('이미지를 디코딩할 수 없습니다');
-      }
+  /// Upscale: Real-ESRGAN AI 모델을 사용한 해상도 향상
+  Future<String?> upscale(String imagePath, {int scale = 2}) async {
+    return await _aiService.upscale(imagePath, scale: scale);
+  }
 
-      // 자동 보정 적용
-      // 1. 밝기 조정 (약간 밝게)
-      image = img.adjustColor(image, brightness: 1.1);
+  /// Reduce Noise: Real-ESRGAN AI 모델을 사용한 노이즈 제거
+  Future<String?> reduceNoise(String imagePath) async {
+    return await _aiService.reduceNoise(imagePath);
+  }
 
-      // 2. 대비 증가
-      image = img.adjustColor(image, contrast: 1.15);
-
-      // 3. 채도 증가
-      image = img.adjustColor(image, saturation: 1.2);
-
-      // 4. 선명도 향상 (unsharp mask 효과)
-      image = img.convolution(image, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0]);
-
-      // 결과 이미지 저장
-      final outputDir = await getGeneratedImagesDirectory();
-      final outputPath = path.join(
-        outputDir,
-        'enhanced_${DateTime.now().millisecondsSinceEpoch}.png',
-      );
-
-      final outputFile = File(outputPath);
-      await outputFile.writeAsBytes(img.encodePng(image));
-
-      return outputPath;
-    } catch (e) {
-      print('Error in auto enhance: $e');
-      rethrow;
-    }
+  /// Portrait Mode: GFPGAN/CodeFormer AI 모델을 사용한 얼굴 보정
+  Future<String?> portraitMode(String imagePath) async {
+    return await _aiService.portraitMode(imagePath);
   }
 
   /// Remove Background: 배경 제거 (MODNet AI 모델 사용)

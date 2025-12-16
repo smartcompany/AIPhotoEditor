@@ -2,11 +2,49 @@ import Foundation
 import CoreML
 import UIKit
 import Accelerate
+import Compression
+import SSZipArchive
 
-class AIModelHandler {
+class AIModelHandler: NSObject, FlutterStreamHandler {
     private var model: MLModel?
     private var isModelLoaded: Bool = false
-    private var modnetModel: modnet? // MODNet CoreML 모델
+    private var modnetModel: MLModel? // MODNet CoreML 모델
+    private var realesrganX2Model: MLModel? // Real-ESRGAN x2 CoreML 모델
+    private var methodChannel: FlutterMethodChannel?
+    private var eventSink: FlutterEventSink?
+    
+    // 모델 다운로드 URL (미리 컴파일된 .mlmodelc 파일)
+    private let modnetURL = "https://github.com/smartcompany/models/releases/download/1.0.0/modnet.mlmodelc.zip"
+    private let realesrganURL = "https://github.com/smartcompany/models/releases/download/1.0.0/realesrgan_x2plus.mlmodelc.zip"
+    
+    func setupChannels(methodChannel: FlutterMethodChannel, eventChannel: FlutterEventChannel) {
+        self.methodChannel = methodChannel
+        methodChannel.setMethodCallHandler { [weak self] (call: FlutterMethodCall, result: @escaping FlutterResult) in
+            self?.handle(call: call, result: result)
+        }
+        eventChannel.setStreamHandler(self)
+    }
+    
+    // FlutterStreamHandler 구현
+    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        self.eventSink = events
+        return nil
+    }
+    
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        self.eventSink = nil
+        return nil
+    }
+    
+    private func sendProgress(modelName: String, progress: Double, status: String) {
+        DispatchQueue.main.async {
+            self.eventSink?([
+                "modelName": modelName,
+                "progress": progress,
+                "status": status
+            ])
+        }
+    }
     
     func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
@@ -45,6 +83,39 @@ class AIModelHandler {
                 return
             }
             removeBackground(imagePath: imagePath, result: result)
+            
+        case "portraitMode":
+            guard let args = call.arguments as? [String: Any],
+                  let imagePath = args["imagePath"] as? String else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "Image path is required", details: nil))
+                return
+            }
+            portraitMode(imagePath: imagePath, result: result)
+            
+        case "autoEnhance":
+            guard let args = call.arguments as? [String: Any],
+                  let imagePath = args["imagePath"] as? String else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "Image path is required", details: nil))
+                return
+            }
+            autoEnhance(imagePath: imagePath, result: result)
+            
+        case "upscale":
+            guard let args = call.arguments as? [String: Any],
+                  let imagePath = args["imagePath"] as? String else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "Image path is required", details: nil))
+                return
+            }
+            let scale = args["scale"] as? Int ?? 2
+            upscale(imagePath: imagePath, scale: scale, result: result)
+            
+        case "reduceNoise":
+            guard let args = call.arguments as? [String: Any],
+                  let imagePath = args["imagePath"] as? String else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "Image path is required", details: nil))
+                return
+            }
+            reduceNoise(imagePath: imagePath, result: result)
             
         default:
             result(FlutterMethodNotImplemented)
@@ -130,11 +201,58 @@ class AIModelHandler {
             do {
                 // 1. MODNet CoreML 모델 로드 (처음 한 번만)
                 if self.modnetModel == nil {
-                    let config = MLModelConfiguration()
-                    config.computeUnits = .all
-                    self.modnetModel = try modnet(configuration: config)
+                    // 로컬 모델 URL 확인 (Documents 또는 Bundle)
+                    if let modelURL = self.getLocalModelURL(modelName: "modnet") {
+                        do {
+                            let config = MLModelConfiguration()
+                            config.computeUnits = .all
+                            self.modnetModel = try MLModel(contentsOf: modelURL, configuration: config)
+                            print("✅ MODNet 모델 로드 완료")
+                            self.continueRemoveBackground(inputImage: inputImage, result: result)
+                            return
+                        } catch {
+                            print("⚠️ MODNet 모델 로드 실패: \(error)")
+                        }
+                    }
+                    
+                    // 모델이 없으면 다운로드
+                    self.ensureModelDownloaded(modelName: "modnet", url: self.modnetURL) { [weak self] success in
+                        guard let self = self else { return }
+                        if success {
+                            if let modelURL = self.getLocalModelURL(modelName: "modnet") {
+                                do {
+                                    let config = MLModelConfiguration()
+                                    config.computeUnits = .all
+                                    self.modnetModel = try MLModel(contentsOf: modelURL, configuration: config)
+                                    print("✅ MODNet 모델 로드 완료")
+                                    self.continueRemoveBackground(inputImage: inputImage, result: result)
+                                } catch {
+                                    DispatchQueue.main.async {
+                                        result(FlutterError(code: "MODEL_LOAD_ERROR", message: "Failed to load MODNet model: \(error.localizedDescription)", details: nil))
+                                    }
+                                }
+                            } else {
+                                DispatchQueue.main.async {
+                                    result(FlutterError(code: "MODEL_LOAD_ERROR", message: "MODNet 모델 파일을 찾을 수 없습니다", details: nil))
+                                }
+                            }
+                        } else {
+                            DispatchQueue.main.async {
+                                result(FlutterError(code: "MODEL_DOWNLOAD_ERROR", message: "Failed to download MODNet model", details: nil))
+                            }
+                        }
+                    }
+                    return
                 }
                 
+                self.continueRemoveBackground(inputImage: inputImage, result: result)
+            }
+        }
+    }
+    
+    private func continueRemoveBackground(inputImage: UIImage, result: @escaping FlutterResult) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
                 guard let modnetModel = self.modnetModel else {
                     DispatchQueue.main.async {
                         result(FlutterError(code: "MODEL_LOAD_ERROR", message: "MODNet model is nil after initialization", details: nil))
@@ -152,10 +270,16 @@ class AIModelHandler {
                     return
                 }
                 
-                // 3. CoreML 모델 직접 실행 (생성된 modnetInput 클래스를 사용)
-                let modnetInput = modnetInput(input: inputArray)
-                let prediction = try modnetModel.prediction(input: modnetInput)
-                let maskArray = prediction.output
+                // 3. CoreML 모델 직접 실행 (MLFeatureProvider 사용)
+                let inputFeature = try MLFeatureValue(multiArray: inputArray)
+                let inputProvider = try MLDictionaryFeatureProvider(dictionary: ["input": inputFeature])
+                let prediction = try modnetModel.prediction(from: inputProvider)
+                
+                // 출력 추출 (모델의 출력 이름 확인 필요, 일반적으로 "output")
+                guard let outputFeature = prediction.featureValue(for: "output"),
+                      let maskArray = outputFeature.multiArrayValue else {
+                    throw NSError(domain: "ModelError", code: -1, userInfo: [NSLocalizedDescriptionKey: "모델 출력을 찾을 수 없습니다"])
+                }
                 
                 // 4. MLMultiArray -> 마스크 UIImage 변환
                 guard let rawMaskImage = self.multiArrayToMaskImage(maskArray) else {
@@ -453,26 +577,590 @@ class AIModelHandler {
         return UIImage(cgImage: resultCG)
     }
     
-    // 임시 더미 이미지 생성 (실제 구현에서는 제거)
-    private func createDummyImage(width: Int, height: Int) -> String {
-        let size = CGSize(width: width, height: height)
-        UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
-        defer { UIGraphicsEndImageContext() }
-        
-        let context = UIGraphicsGetCurrentContext()!
-        context.setFillColor(UIColor.systemPurple.cgColor)
-        context.fill(CGRect(origin: .zero, size: size))
-        
-        let image = UIGraphicsGetImageFromCurrentImageContext()!
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let imagePath = documentsPath.appendingPathComponent("generated_\(UUID().uuidString).png")
-        
-        if let imageData = image.pngData() {
-            try? imageData.write(to: imagePath)
-            return imagePath.path
+    // MARK: - Portrait Mode (GFPGAN/CodeFormer)
+    private func portraitMode(imagePath: String, result: @escaping FlutterResult) {
+        guard let image = UIImage(contentsOfFile: imagePath) else {
+            result(FlutterError(code: "INVALID_IMAGE", message: "Could not load image", details: nil))
+            return
         }
         
-        return ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            // TODO: GFPGAN CoreML 모델 로드 및 실행
+            // 현재는 간단한 필터로 얼굴 보정 효과 적용
+            guard let correctedImage = self.fixedOrientation(image) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to correct image orientation", details: nil))
+                }
+                return
+            }
+            let processedImage = self.applyPortraitFilter(correctedImage)
+            
+            guard let outputPath = self.saveImage(processedImage, prefix: "portrait") else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                result(outputPath)
+            }
+        }
+    }
+    
+    // Portrait Mode 필터 적용 (임시 구현)
+    private func applyPortraitFilter(_ image: UIImage) -> UIImage {
+        guard let ciImage = CIImage(image: image) else { return image }
+        
+        let context = CIContext()
+        
+        // 부드러운 블러 + 선명도 조정으로 피부 보정 효과
+        guard let blurFilter = CIFilter(name: "CIGaussianBlur") else { return image }
+        blurFilter.setValue(ciImage, forKey: kCIInputImageKey)
+        blurFilter.setValue(3.0, forKey: kCIInputRadiusKey)
+        guard let blurredImage = blurFilter.outputImage else { return image }
+        
+        guard let sharpenFilter = CIFilter(name: "CIUnsharpMask") else { return image }
+        sharpenFilter.setValue(ciImage, forKey: kCIInputImageKey)
+        sharpenFilter.setValue(2.0, forKey: kCIInputRadiusKey)
+        sharpenFilter.setValue(2.0, forKey: kCIInputIntensityKey)
+        guard let sharpenedImage = sharpenFilter.outputImage else { return image }
+        
+        // 블러와 선명도를 블렌딩
+        guard let blendFilter = CIFilter(name: "CISourceOverCompositing") else { return image }
+        blendFilter.setValue(blurredImage, forKey: kCIInputImageKey)
+        blendFilter.setValue(sharpenedImage, forKey: kCIInputBackgroundImageKey)
+        guard let blendedImage = blendFilter.outputImage else { return image }
+        
+        guard let cgImage = context.createCGImage(blendedImage, from: ciImage.extent) else {
+            return image
+        }
+        
+        return UIImage(cgImage: cgImage)
+    }
+    
+    // MARK: - Auto Enhance (Real-ESRGAN)
+    private func autoEnhance(imagePath: String, result: @escaping FlutterResult) {
+        guard let image = UIImage(contentsOfFile: imagePath) else {
+            result(FlutterError(code: "INVALID_IMAGE", message: "Could not load image", details: nil))
+            return
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let correctedImage = self.fixedOrientation(image) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to correct image orientation", details: nil))
+                }
+                return
+            }
+            
+            // Real-ESRGAN x2 모델 사용 (향상 후 원본 크기로 리사이즈)
+            if let processedImage = self.runRealESRGAN(correctedImage, scale: 2) {
+                // 원본 크기로 리사이즈 (향상만 하고 크기는 유지)
+                let originalSize = correctedImage.size
+                guard let resizedImage = self.resizeImage(processedImage, to: originalSize) else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to resize enhanced image", details: nil))
+                    }
+                    return
+                }
+                
+                guard let outputPath = self.saveImage(resizedImage, prefix: "enhanced") else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                    }
+                    return
+                }
+                
+                DispatchQueue.main.async {
+                    result(outputPath)
+                }
+            } else {
+                // 모델이 없으면 필터 폴백
+                let processedImage = self.applyAutoEnhanceFilter(correctedImage)
+                guard let outputPath = self.saveImage(processedImage, prefix: "enhanced") else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                    }
+                    return
+                }
+                
+                DispatchQueue.main.async {
+                    result(outputPath)
+                }
+            }
+        }
+    }
+    
+    // Auto Enhance 필터 적용 (임시 구현)
+    private func applyAutoEnhanceFilter(_ image: UIImage) -> UIImage {
+        guard let ciImage = CIImage(image: image) else { return image }
+        
+        let context = CIContext()
+        
+        // 밝기/대비/채도 조정
+        guard let colorControls = CIFilter(name: "CIColorControls") else { return image }
+        colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+        colorControls.setValue(1.05, forKey: kCIInputBrightnessKey) // 밝기 증가
+        colorControls.setValue(1.08, forKey: kCIInputContrastKey) // 대비 증가
+        colorControls.setValue(1.05, forKey: kCIInputSaturationKey) // 채도 증가
+        guard let adjustedImage = colorControls.outputImage else { return image }
+        
+        // 선명도 향상
+        guard let sharpenFilter = CIFilter(name: "CIUnsharpMask") else { return image }
+        sharpenFilter.setValue(adjustedImage, forKey: kCIInputImageKey)
+        sharpenFilter.setValue(1.5, forKey: kCIInputRadiusKey)
+        sharpenFilter.setValue(1.5, forKey: kCIInputIntensityKey)
+        guard let sharpenedImage = sharpenFilter.outputImage else { return image }
+        
+        guard let cgImage = context.createCGImage(sharpenedImage, from: ciImage.extent) else {
+            return image
+        }
+        
+        return UIImage(cgImage: cgImage)
+    }
+    
+    // MARK: - Upscale (Real-ESRGAN)
+    private func upscale(imagePath: String, scale: Int, result: @escaping FlutterResult) {
+        guard let image = UIImage(contentsOfFile: imagePath) else {
+            result(FlutterError(code: "INVALID_IMAGE", message: "Could not load image", details: nil))
+            return
+        }
+        
+        guard scale >= 2 && scale <= 4 else {
+            result(FlutterError(code: "INVALID_SCALE", message: "Scale must be between 2 and 4", details: nil))
+            return
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let correctedImage = self.fixedOrientation(image) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to correct image orientation", details: nil))
+                }
+                return
+            }
+            
+            // Real-ESRGAN x2 모델 로드 및 다운로드 확인
+            self.loadRealESRGANModel { [weak self] success in
+                guard let self = self, success else {
+                    // 모델이 없으면 필터 폴백
+                    let processedImage = self?.applyUpscaleFilter(correctedImage, scale: scale) ?? correctedImage
+                    guard let outputPath = self?.saveImage(processedImage, prefix: "upscale_x\(scale)") else {
+                        DispatchQueue.main.async {
+                            result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                        }
+                        return
+                    }
+                    
+                    DispatchQueue.main.async {
+                        result(outputPath)
+                    }
+                    return
+                }
+                
+                // Real-ESRGAN x2 모델 사용
+                // scale=2: x2 모델 1번 적용
+                // scale=4: x2 모델 2번 적용 (x2 * x2 = x4)
+                if scale == 2 {
+                    if let processedImage = self.runRealESRGAN(correctedImage, scale: 2) {
+                        guard let outputPath = self.saveImage(processedImage, prefix: "upscale_x2") else {
+                            DispatchQueue.main.async {
+                                result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                            }
+                            return
+                        }
+                        
+                        DispatchQueue.main.async {
+                            result(outputPath)
+                        }
+                        return
+                    }
+                } else if scale == 4 {
+                    // x2 모델을 2번 적용하여 x4 효과
+                    if let firstUpscale = self.runRealESRGAN(correctedImage, scale: 2),
+                       let secondUpscale = self.runRealESRGAN(firstUpscale, scale: 2) {
+                        guard let outputPath = self.saveImage(secondUpscale, prefix: "upscale_x4") else {
+                            DispatchQueue.main.async {
+                                result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                            }
+                            return
+                        }
+                        
+                        DispatchQueue.main.async {
+                            result(outputPath)
+                        }
+                        return
+                    }
+                }
+                
+                // 모델 실행 실패 시 필터 폴백
+                let processedImage = self.applyUpscaleFilter(correctedImage, scale: scale)
+                guard let outputPath = self.saveImage(processedImage, prefix: "upscale_x\(scale)") else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                    }
+                    return
+                }
+                
+                DispatchQueue.main.async {
+                    result(outputPath)
+                }
+            }
+        }
+    }
+    
+    // Upscale 필터 적용 (임시 구현)
+    private func applyUpscaleFilter(_ image: UIImage, scale: Int) -> UIImage {
+        let newSize = CGSize(
+            width: image.size.width * CGFloat(scale),
+            height: image.size.height * CGFloat(scale)
+        )
+        
+        UIGraphicsBeginImageContextWithOptions(newSize, false, image.scale)
+        defer { UIGraphicsEndImageContext() }
+        
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        
+        guard let upscaledImage = UIGraphicsGetImageFromCurrentImageContext() else {
+            return image
+        }
+        
+        return upscaledImage
+    }
+    
+    // MARK: - Reduce Noise (Real-ESRGAN)
+    private func reduceNoise(imagePath: String, result: @escaping FlutterResult) {
+        guard let image = UIImage(contentsOfFile: imagePath) else {
+            result(FlutterError(code: "INVALID_IMAGE", message: "Could not load image", details: nil))
+            return
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let correctedImage = self.fixedOrientation(image) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to correct image orientation", details: nil))
+                }
+                return
+            }
+            
+            // Real-ESRGAN x2 모델 로드 및 다운로드 확인
+            self.loadRealESRGANModel { [weak self] success in
+                guard let self = self else { return }
+                
+                if success, let processedImage = self.runRealESRGAN(correctedImage, scale: 2) {
+                    // 원본 크기로 리사이즈 (노이즈 제거만 하고 크기는 유지)
+                    let originalSize = correctedImage.size
+                    guard let resizedImage = self.resizeImage(processedImage, to: originalSize) else {
+                        DispatchQueue.main.async {
+                            result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to resize denoised image", details: nil))
+                        }
+                        return
+                    }
+                    
+                    guard let outputPath = self.saveImage(resizedImage, prefix: "denoise") else {
+                        DispatchQueue.main.async {
+                            result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                        }
+                        return
+                    }
+                    
+                    DispatchQueue.main.async {
+                        result(outputPath)
+                    }
+                } else {
+                    // 모델이 없으면 필터 폴백
+                    let processedImage = self.applyDenoiseFilter(correctedImage)
+                    guard let outputPath = self.saveImage(processedImage, prefix: "denoise") else {
+                        DispatchQueue.main.async {
+                            result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                        }
+                        return
+                    }
+                    
+                    DispatchQueue.main.async {
+                        result(outputPath)
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Real-ESRGAN CoreML 모델 실행
+    private func loadRealESRGANModel(completion: @escaping (Bool) -> Void) {
+        if realesrganX2Model != nil {
+            completion(true)
+            return
+        }
+        
+        // 로컬 파일 확인
+        if let modelURL = getLocalModelURL(modelName: "realesrgan_x2plus") {
+            do {
+                let config = MLModelConfiguration()
+                config.computeUnits = .all
+                realesrganX2Model = try MLModel(contentsOf: modelURL, configuration: config)
+                print("✅ Real-ESRGAN x2 모델 로드 완료")
+                completion(true)
+                return
+            } catch {
+                print("❌ Real-ESRGAN x2 모델 로드 실패: \(error)")
+            }
+        }
+        
+        // 모델이 없으면 다운로드
+        ensureModelDownloaded(modelName: "realesrgan_x2plus", url: realesrganURL) { [weak self] success in
+            guard let self = self, success else {
+                completion(false)
+                return
+            }
+            
+            if let modelURL = self.getLocalModelURL(modelName: "realesrgan_x2plus") {
+                do {
+                    let config = MLModelConfiguration()
+                    config.computeUnits = .all
+                    self.realesrganX2Model = try MLModel(contentsOf: modelURL, configuration: config)
+                    print("✅ Real-ESRGAN x2 모델 로드 완료")
+                    completion(true)
+                } catch {
+                    print("❌ Real-ESRGAN x2 모델 로드 실패: \(error)")
+                    completion(false)
+                }
+            } else {
+                completion(false)
+            }
+        }
+    }
+    
+    private func loadRealESRGANModelSync() -> MLModel? {
+        if let modelURL = getLocalModelURL(modelName: "realesrgan_x2plus") {
+            do {
+                let config = MLModelConfiguration()
+                config.computeUnits = .all
+                return try MLModel(contentsOf: modelURL, configuration: config)
+            } catch {
+                print("❌ Real-ESRGAN x2 모델 로드 실패: \(error)")
+            }
+        }
+        return nil
+    }
+    
+    private func runRealESRGAN(_ image: UIImage, scale: Int) -> UIImage? {
+        // 항상 x2 모델 사용 (scale 파라미터는 호환성을 위해 유지)
+        guard let model = loadRealESRGANModelSync() else {
+            return nil
+        }
+        
+        // 이미지를 모델 입력 크기로 리사이즈 (일반적으로 512x512 또는 원본 크기)
+        // Real-ESRGAN은 다양한 입력 크기를 지원하지만, 메모리 효율을 위해 타일링 처리 필요할 수 있음
+        let inputSize = image.size
+        guard let pixelBuffer = imageToPixelBuffer(image, size: inputSize) else {
+            print("❌ 이미지를 PixelBuffer로 변환 실패")
+            return nil
+        }
+        
+        do {
+            // 모델 입력 생성 (실제 모델의 입력 형식에 맞춰야 함)
+            // Real-ESRGAN CoreML 모델의 입력 형식에 따라 조정 필요
+            let input = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(pixelBuffer: pixelBuffer)])
+            
+            // 모델 실행
+            let prediction = try model.prediction(from: input)
+            
+            // 출력 추출 (실제 모델의 출력 형식에 맞춰야 함)
+            guard let outputFeature = prediction.featureValue(for: "output"),
+                  let outputPixelBuffer = outputFeature.imageBufferValue else {
+                print("❌ 모델 출력 추출 실패")
+                return nil
+            }
+            
+            // PixelBuffer를 UIImage로 변환
+            return pixelBufferToImage(outputPixelBuffer)
+            
+        } catch {
+            print("❌ Real-ESRGAN 모델 실행 실패: \(error)")
+            return nil
+        }
+    }
+    
+    // Denoise 필터 적용 (임시 구현)
+    private func applyDenoiseFilter(_ image: UIImage) -> UIImage {
+        guard let ciImage = CIImage(image: image) else { return image }
+        
+        let context = CIContext()
+        
+        // 약한 블러로 노이즈 제거
+        guard let blurFilter = CIFilter(name: "CIGaussianBlur") else { return image }
+        blurFilter.setValue(ciImage, forKey: kCIInputImageKey)
+        blurFilter.setValue(1.2, forKey: kCIInputRadiusKey)
+        guard let blurredImage = blurFilter.outputImage else { return image }
+        
+        // 선명도 회복
+        guard let sharpenFilter = CIFilter(name: "CIUnsharpMask") else { return image }
+        sharpenFilter.setValue(blurredImage, forKey: kCIInputImageKey)
+        sharpenFilter.setValue(1.0, forKey: kCIInputRadiusKey)
+        sharpenFilter.setValue(1.2, forKey: kCIInputIntensityKey)
+        guard let sharpenedImage = sharpenFilter.outputImage else { return image }
+        
+        guard let cgImage = context.createCGImage(sharpenedImage, from: ciImage.extent) else {
+            return image
+        }
+        
+        return UIImage(cgImage: cgImage)
+    }
+    
+    // 이미지 저장 헬퍼 함수
+    private func saveImage(_ image: UIImage, prefix: String) -> String? {
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let filename = "\(prefix)_\(timestamp).png"
+        let fileURL = documentsPath.appendingPathComponent(filename)
+        
+        guard let imageData = image.pngData() else {
+            return nil
+        }
+        
+        do {
+            try imageData.write(to: fileURL)
+            return fileURL.path
+        } catch {
+            print("Failed to save image: \(error)")
+            return nil
+        }
+    }
+    
+    // MARK: - 모델 다운로드 및 관리
+    private func getLocalModelURL(modelName: String) -> URL? {
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        
+        // 컴파일된 .mlmodelc 파일 확인 (다운로드된 모델)
+        let compiledModelPath = documentsPath.appendingPathComponent("models/\(modelName).mlmodelc")
+        if FileManager.default.fileExists(atPath: compiledModelPath.path) {
+            return compiledModelPath
+        }
+        
+        // Bundle에서 확인 (이미 컴파일되어 있음)
+        if let bundleURL = Bundle.main.url(forResource: modelName, withExtension: "mlmodelc") {
+            return bundleURL
+        }
+        
+        return nil
+    }
+    
+    private func ensureModelDownloaded(modelName: String, url: String, completion: @escaping (Bool) -> Void) {
+        // 이미 로컬에 있으면 바로 반환
+        if getLocalModelURL(modelName: modelName) != nil {
+            sendProgress(modelName: modelName, progress: 1.0, status: "모델 준비 완료")
+            completion(true)
+            return
+        }
+        
+        sendProgress(modelName: modelName, progress: 0.0, status: "다운로드 시작...")
+        
+        guard let downloadURL = URL(string: url) else {
+            sendProgress(modelName: modelName, progress: 0.0, status: "다운로드 URL 오류")
+            completion(false)
+            return
+        }
+        
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let modelsDir = documentsPath.appendingPathComponent("models")
+        let zipPath = modelsDir.appendingPathComponent("\(modelName).zip")
+        let extractPath = modelsDir.appendingPathComponent(modelName)
+        
+        // 디렉토리 생성
+        try? FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true, attributes: nil)
+        
+        // 다운로드
+        let task = URLSession.shared.downloadTask(with: downloadURL) { [weak self] tempURL, response, error in
+            guard let self = self else {
+                completion(false)
+                return
+            }
+            
+            if let error = error {
+                print("❌ 다운로드 실패: \(error.localizedDescription)")
+                self.sendProgress(modelName: modelName, progress: 0.0, status: "다운로드 실패: \(error.localizedDescription)")
+                completion(false)
+                return
+            }
+            
+            guard let tempURL = tempURL else {
+                self.sendProgress(modelName: modelName, progress: 0.0, status: "다운로드 실패: 임시 파일 없음")
+                completion(false)
+                return
+            }
+            
+            // zip 파일 저장
+            do {
+                try FileManager.default.moveItem(at: tempURL, to: zipPath)
+                self.sendProgress(modelName: modelName, progress: 0.5, status: "압축 해제 중...")
+                
+                // zip 해제
+                try self.unzipFile(at: zipPath, to: extractPath)
+                
+                // zip 파일 삭제
+                try? FileManager.default.removeItem(at: zipPath)
+                
+                // .mlmodelc 파일 확인
+                let compiledModelPath = extractPath.appendingPathComponent("\(modelName).mlmodelc")
+                
+                guard FileManager.default.fileExists(atPath: compiledModelPath.path) else {
+                    self.sendProgress(modelName: modelName, progress: 0.0, status: "압축 해제 실패: .mlmodelc 파일 없음")
+                    completion(false)
+                    return
+                }
+                
+                // 컴파일된 .mlmodelc 파일을 models 디렉토리로 이동
+                let finalPath = modelsDir.appendingPathComponent("\(modelName).mlmodelc")
+                try? FileManager.default.removeItem(at: finalPath)
+                try FileManager.default.moveItem(at: compiledModelPath, to: finalPath)
+                try? FileManager.default.removeItem(at: extractPath)
+                
+                self.sendProgress(modelName: modelName, progress: 1.0, status: "다운로드 완료")
+                completion(true)
+            } catch {
+                print("❌ 파일 처리 실패: \(error.localizedDescription)")
+                self.sendProgress(modelName: modelName, progress: 0.0, status: "파일 처리 실패: \(error.localizedDescription)")
+                completion(false)
+            }
+        }
+        
+        // 진행도 모니터링
+        let observation = task.progress.observe(\.fractionCompleted) { [weak self] progress, _ in
+            guard let self = self else { return }
+            let percent = progress.fractionCompleted * 0.5 // 다운로드는 50%까지
+            self.sendProgress(modelName: modelName, progress: percent, status: "다운로드 중... \(Int(percent * 100))%")
+        }
+        
+        task.resume()
+    }
+    
+    private func unzipFile(at zipPath: URL, to destinationPath: URL) throws {
+        // SSZipArchive를 사용한 zip 해제
+        // 디렉토리 생성
+        try? FileManager.default.createDirectory(at: destinationPath, withIntermediateDirectories: true, attributes: nil)
+        
+        // SSZipArchive로 zip 해제
+        var error: NSError?
+        let success = SSZipArchive.unzipFile(
+            atPath: zipPath.path,
+            toDestination: destinationPath.path,
+            preserveAttributes: true,
+            overwrite: true,
+            password: nil,
+            error: &error,
+            delegate: nil
+        )
+        
+        if !success {
+            let errorMessage = error?.localizedDescription ?? "압축 해제 실패"
+            throw NSError(domain: "UnzipError", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+    }
+    
+    private func copyModelToBundleIfNeeded(modelName: String, from sourceURL: URL) {
+        // Bundle은 읽기 전용이므로 실제로는 복사할 수 없음
+        // 대신 Documents 디렉토리의 모델을 직접 사용하도록 수정 필요
+        // 일단 이 함수는 placeholder로 남겨둠
     }
 }
 

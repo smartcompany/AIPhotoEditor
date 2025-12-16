@@ -1,4 +1,8 @@
 class AppConstants {
+  // Server URL
+  static const String serverBaseUrl =
+      'https://ai-photo-editor-server.vercel.app';
+
   // Model URLs
   static const String coreMLModelUrl =
       'https://huggingface.co/apple/coreml-stable-diffusion-v1-5';
@@ -27,7 +31,14 @@ class AppConstants {
   static const String methodUnloadModel = 'unloadModel';
   static const String methodGetModelStatus = 'getModelStatus';
   static const String methodRemoveBackground = 'removeBackground';
+  static const String methodPortraitMode = 'portraitMode';
+  static const String methodAutoEnhance = 'autoEnhance';
+  static const String methodUpscale = 'upscale';
+  static const String methodReduceNoise = 'reduceNoise';
 
-  // MODNet model
+  // AI Model names
   static const String modnetModelName = 'modnet';
+  static const String gfpgModelName = 'gfpgan'; // Portrait Mode용
+  static const String realesrganModelName =
+      'realesrgan'; // Enhance/Upscale/Noise Reduction용
 }

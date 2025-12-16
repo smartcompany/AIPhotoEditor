@@ -95,4 +95,72 @@ class AIModelService {
       rethrow;
     }
   }
+
+  /// Portrait Mode: 네이티브 AI 모델을 사용한 얼굴 보정
+  Future<String?> portraitMode(String imagePath) async {
+    if (imagePath.isEmpty) {
+      throw ArgumentError('imagePath is required for portrait mode');
+    }
+    try {
+      final result = await _channel.invokeMethod<String>(
+        AppConstants.methodPortraitMode,
+        {'imagePath': imagePath},
+      );
+      return result;
+    } catch (e) {
+      print('Error in portrait mode: $e');
+      rethrow;
+    }
+  }
+
+  /// Auto Enhance: 네이티브 AI 모델을 사용한 이미지 자동 향상
+  Future<String?> autoEnhance(String imagePath) async {
+    if (imagePath.isEmpty) {
+      throw ArgumentError('imagePath is required for auto enhance');
+    }
+    try {
+      final result = await _channel.invokeMethod<String>(
+        AppConstants.methodAutoEnhance,
+        {'imagePath': imagePath},
+      );
+      return result;
+    } catch (e) {
+      print('Error in auto enhance: $e');
+      rethrow;
+    }
+  }
+
+  /// Upscale: 네이티브 AI 모델을 사용한 해상도 향상
+  Future<String?> upscale(String imagePath, {int scale = 2}) async {
+    if (imagePath.isEmpty) {
+      throw ArgumentError('imagePath is required for upscale');
+    }
+    try {
+      final result = await _channel.invokeMethod<String>(
+        AppConstants.methodUpscale,
+        {'imagePath': imagePath, 'scale': scale},
+      );
+      return result;
+    } catch (e) {
+      print('Error in upscale: $e');
+      rethrow;
+    }
+  }
+
+  /// Reduce Noise: 네이티브 AI 모델을 사용한 노이즈 제거
+  Future<String?> reduceNoise(String imagePath) async {
+    if (imagePath.isEmpty) {
+      throw ArgumentError('imagePath is required for noise reduction');
+    }
+    try {
+      final result = await _channel.invokeMethod<String>(
+        AppConstants.methodReduceNoise,
+        {'imagePath': imagePath},
+      );
+      return result;
+    } catch (e) {
+      print('Error in reduce noise: $e');
+      rethrow;
+    }
+  }
 }

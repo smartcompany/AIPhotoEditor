@@ -31,6 +31,9 @@ target 'Runner' do
   use_frameworks!
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  
+  # Zip 해제를 위한 라이브러리
+  pod 'SSZipArchive', '~> 2.4'
   target 'RunnerTests' do
     inherit! :search_paths
   end

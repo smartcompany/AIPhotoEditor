@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import '../services/ai_model_service.dart';
 import '../services/image_service.dart';
+import '../services/model_download_service.dart';
 import '../models/generation_config.dart';
 import '../widgets/image_editor.dart';
+import '../widgets/model_download_dialog.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -20,6 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
       TextEditingController();
   final AIModelService _aiService = AIModelService();
   final ImageService _imageService = ImageService();
+  final ModelDownloadService _downloadService = ModelDownloadService();
 
   String? _selectedImagePath;
   File? _selectedImageFile;
@@ -293,7 +297,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _performRemoveBackground() async {
+  Future<void> _performPortraitMode() async {
     if (_selectedImagePath == null) {
       _showError('이미지를 선택해주세요.');
       return;
@@ -304,21 +308,21 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
-      final resultPath = await _imageService.removeBackground(
-        _selectedImagePath!,
-      );
+      final resultPath = await _imageService.portraitMode(_selectedImagePath!);
 
       if (resultPath != null && mounted) {
         _applyResultImage(resultPath);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('배경 제거가 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
+            content: Text(
+              'Portrait Mode가 적용되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.',
+            ),
             backgroundColor: Colors.green,
             duration: Duration(seconds: 3),
           ),
         );
       } else {
-        _showError('배경 제거에 실패했습니다.');
+        _showError('Portrait Mode 적용에 실패했습니다.');
       }
     } catch (e) {
       _showError('오류 발생: $e');
@@ -329,6 +333,193 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     }
+  }
+
+  Future<void> _performRemoveBackground() async {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    // 모델 다운로드 진행도 표시
+    await _showDownloadDialogIfNeeded('modnet', () async {
+      setState(() {
+        _isGenerating = true;
+      });
+
+      try {
+        final resultPath = await _imageService.removeBackground(
+          _selectedImagePath!,
+        );
+
+        if (resultPath != null && mounted) {
+          _applyResultImage(resultPath);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('배경 제거가 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        } else {
+          _showError('배경 제거에 실패했습니다.');
+        }
+      } catch (e) {
+        _showError('오류 발생: $e');
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isGenerating = false;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _performUpscale() async {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    // 모델 다운로드 진행도 표시
+    await _showDownloadDialogIfNeeded('realesrgan_x2plus', () async {
+      setState(() {
+        _isGenerating = true;
+      });
+
+      try {
+        final resultPath = await _imageService.upscale(
+          _selectedImagePath!,
+          scale: 2,
+        );
+
+        if (resultPath != null && mounted) {
+          _applyResultImage(resultPath);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('해상도 향상이 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        } else {
+          _showError('해상도 향상에 실패했습니다.');
+        }
+      } catch (e) {
+        _showError('오류 발생: $e');
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isGenerating = false;
+          });
+        }
+      }
+    });
+  }
+
+  Future<void> _performReduceNoise() async {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    // 모델 다운로드 진행도 표시
+    await _showDownloadDialogIfNeeded('realesrgan_x2plus', () async {
+      setState(() {
+        _isGenerating = true;
+      });
+
+      try {
+        final resultPath = await _imageService.reduceNoise(_selectedImagePath!);
+
+        if (resultPath != null && mounted) {
+          _applyResultImage(resultPath);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('노이즈 제거가 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        } else {
+          _showError('노이즈 제거에 실패했습니다.');
+        }
+      } catch (e) {
+        _showError('오류 발생: $e');
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isGenerating = false;
+          });
+        }
+      }
+    });
+  }
+
+  /// 모델 다운로드 다이얼로그 표시 (필요한 경우)
+  Future<void> _showDownloadDialogIfNeeded(
+    String modelName,
+    Future<void> Function() onComplete,
+  ) async {
+    // 진행도 스트림 구독
+    final progressStream = _downloadService.getProgressStream();
+
+    // 다이얼로그 표시
+    bool dialogShown = false;
+    bool downloadComplete = false;
+    StreamSubscription<ModelDownloadProgress>? subscription;
+
+    // 진행도 스트림 리스너
+    subscription = progressStream.listen(
+      (progress) {
+        // 해당 모델의 진행도만 표시
+        if (progress.modelName == modelName) {
+          if (!dialogShown && mounted) {
+            dialogShown = true;
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (context) => ModelDownloadDialog(
+                modelName: modelName,
+                progressStream: progressStream,
+              ),
+            ).then((_) {
+              downloadComplete = true;
+              subscription?.cancel();
+              onComplete();
+            });
+          }
+
+          // 다운로드 완료 확인
+          if (progress.progress >= 1.0 && dialogShown && !downloadComplete) {
+            Future.delayed(const Duration(milliseconds: 500), () {
+              if (mounted && Navigator.of(context).canPop()) {
+                Navigator.of(context).pop();
+                downloadComplete = true;
+                subscription?.cancel();
+                onComplete();
+              }
+            });
+          }
+        }
+      },
+      onError: (error) {
+        if (mounted && dialogShown && Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
+        subscription?.cancel();
+        _showError('모델 다운로드 실패: $error');
+      },
+    );
+
+    // 다이얼로그가 표시되지 않으면 바로 실행 (모델이 이미 있는 경우)
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (!dialogShown && !downloadComplete) {
+        subscription?.cancel();
+        onComplete();
+      }
+    });
   }
 
   void _showAIToolsSheet() {
@@ -347,15 +538,15 @@ class _HomeScreenState extends State<HomeScreen> {
         },
         onPortraitMode: () {
           Navigator.pop(context);
-          // TODO: Portrait mode 기능
+          _performPortraitMode();
         },
         onUpscale: () {
           Navigator.pop(context);
-          // TODO: Upscale 기능
+          _performUpscale();
         },
         onReduceNoise: () {
           Navigator.pop(context);
-          // TODO: Reduce noise 기능
+          _performReduceNoise();
         },
       ),
     );
