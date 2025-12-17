@@ -163,4 +163,44 @@ class AIModelService {
       rethrow;
     }
   }
+
+  /// Apply Filter: 이미지에 필터 적용
+  Future<String?> applyFilter(String imagePath, String filterName) async {
+    if (imagePath.isEmpty) {
+      throw ArgumentError('imagePath is required for filter');
+    }
+    try {
+      final result = await _channel.invokeMethod<String>(
+        AppConstants.methodApplyFilter,
+        {'imagePath': imagePath, 'filterName': filterName},
+      );
+      return result;
+    } catch (e) {
+      print('Error in apply filter: $e');
+      rethrow;
+    }
+  }
+
+  /// Apply Adjustments: 이미지 조정 적용
+  Future<String?> applyAdjustments(
+    String imagePath,
+    Map<String, double> adjustments,
+  ) async {
+    if (imagePath.isEmpty) {
+      throw ArgumentError('imagePath is required for adjustments');
+    }
+    try {
+      final result = await _channel.invokeMethod<String>(
+        AppConstants.methodApplyAdjustments,
+        {
+          'imagePath': imagePath,
+          'adjustments': adjustments,
+        },
+      );
+      return result;
+    } catch (e) {
+      print('Error in apply adjustments: $e');
+      rethrow;
+    }
+  }
 }

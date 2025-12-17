@@ -153,4 +153,17 @@ class ImageService {
   Future<String?> removeBackground(String imagePath) async {
     return await _aiService.removeBackground(imagePath);
   }
+
+  /// Apply Filter: 이미지에 필터 적용
+  Future<String?> applyFilter(String imagePath, String filterName) async {
+    return await _aiService.applyFilter(imagePath, filterName);
+  }
+
+  /// Apply Adjustments: 이미지 조정 적용
+  Future<String?> applyAdjustments(
+    String imagePath,
+    Map<String, double> adjustments,
+  ) async {
+    return await _aiService.applyAdjustments(imagePath, adjustments);
+  }
 }

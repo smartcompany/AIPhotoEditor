@@ -35,6 +35,8 @@ class AppConstants {
   static const String methodAutoEnhance = 'autoEnhance';
   static const String methodUpscale = 'upscale';
   static const String methodReduceNoise = 'reduceNoise';
+  static const String methodApplyFilter = 'applyFilter';
+  static const String methodApplyAdjustments = 'applyAdjustments';
 
   // AI Model names
   static const String modnetModelName = 'modnet';

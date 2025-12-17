@@ -117,6 +117,24 @@ class AIModelHandler: NSObject, FlutterStreamHandler {
             }
             reduceNoise(imagePath: imagePath, result: result)
             
+        case "applyFilter":
+            guard let args = call.arguments as? [String: Any],
+                  let imagePath = args["imagePath"] as? String,
+                  let filterName = args["filterName"] as? String else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "Image path and filter name are required", details: nil))
+                return
+            }
+            applyFilter(imagePath: imagePath, filterName: filterName, result: result)
+            
+        case "applyAdjustments":
+            guard let args = call.arguments as? [String: Any],
+                  let imagePath = args["imagePath"] as? String,
+                  let adjustments = args["adjustments"] as? [String: Any] else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "Image path and adjustments are required", details: nil))
+                return
+            }
+            applyAdjustments(imagePath: imagePath, adjustments: adjustments, result: result)
+            
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -927,6 +945,280 @@ class AIModelHandler: NSObject, FlutterStreamHandler {
                 }
             }
         }
+    }
+    
+    // MARK: - Apply Filter
+    private func applyFilter(imagePath: String, filterName: String, result: @escaping FlutterResult) {
+        guard let image = UIImage(contentsOfFile: imagePath) else {
+            result(FlutterError(code: "INVALID_IMAGE", message: "Could not load image", details: nil))
+            return
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let correctedImage = self.fixedOrientation(image) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to correct image orientation", details: nil))
+                }
+                return
+            }
+            
+            let filteredImage = self.applyImageFilter(correctedImage, filterName: filterName)
+            
+            guard let outputPath = self.saveImage(filteredImage, prefix: "filtered_\(filterName.lowercased())") else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "SAVE_ERROR", message: "Failed to save filtered image", details: nil))
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                result(outputPath)
+            }
+        }
+    }
+    
+    private func applyImageFilter(_ image: UIImage, filterName: String) -> UIImage {
+        guard let ciImage = CIImage(image: image) else { return image }
+        let context = CIContext()
+        
+        var outputImage: CIImage = ciImage
+        
+        switch filterName.lowercased() {
+        case "original", "none":
+            // 원본 그대로
+            break
+            
+        case "vivid":
+            // 비비드: 채도와 대비 증가
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                colorControls.setValue(1.3, forKey: kCIInputSaturationKey)
+                colorControls.setValue(1.15, forKey: kCIInputContrastKey)
+                if let vividImage = colorControls.outputImage {
+                    outputImage = vividImage
+                }
+            }
+            
+        case "vintage":
+            // 빈티지 효과: 세피아 + 약간의 노이즈
+            if let sepiaFilter = CIFilter(name: "CISepiaTone") {
+                sepiaFilter.setValue(ciImage, forKey: kCIInputImageKey)
+                sepiaFilter.setValue(0.8, forKey: kCIInputIntensityKey)
+                if let sepiaImage = sepiaFilter.outputImage {
+                    outputImage = sepiaImage
+                }
+            }
+            
+        case "b&w", "black & white", "black and white":
+            // 흑백: 채도 0
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                colorControls.setValue(0.0, forKey: kCIInputSaturationKey)
+                if let bwImage = colorControls.outputImage {
+                    outputImage = bwImage
+                }
+            }
+            
+        case "cool":
+            // 쿨 톤: 색온도 조정 (파란색 톤)
+            if let temperatureFilter = CIFilter(name: "CITemperatureAndTint") {
+                temperatureFilter.setValue(ciImage, forKey: kCIInputImageKey)
+                temperatureFilter.setValue(CIVector(x: 6500, y: 0), forKey: "inputNeutral")
+                temperatureFilter.setValue(CIVector(x: 8000, y: 0), forKey: "inputTargetNeutral")
+                if let coolImage = temperatureFilter.outputImage {
+                    outputImage = coolImage
+                }
+            } else {
+                // 대체: 색조 조정
+                if let colorControls = CIFilter(name: "CIColorControls") {
+                    colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                    colorControls.setValue(0.9, forKey: kCIInputSaturationKey)
+                    if let coolImage = colorControls.outputImage {
+                        outputImage = coolImage
+                    }
+                }
+            }
+            
+        case "warm":
+            // 웜 톤: 색온도 조정 (주황색 톤)
+            if let temperatureFilter = CIFilter(name: "CITemperatureAndTint") {
+                temperatureFilter.setValue(ciImage, forKey: kCIInputImageKey)
+                temperatureFilter.setValue(CIVector(x: 6500, y: 0), forKey: "inputNeutral")
+                temperatureFilter.setValue(CIVector(x: 4500, y: 0), forKey: "inputTargetNeutral")
+                if let warmImage = temperatureFilter.outputImage {
+                    outputImage = warmImage
+                }
+            } else {
+                // 대체: 색조 조정
+                if let colorControls = CIFilter(name: "CIColorControls") {
+                    colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                    colorControls.setValue(1.1, forKey: kCIInputSaturationKey)
+                    colorControls.setValue(1.05, forKey: kCIInputBrightnessKey)
+                    if let warmImage = colorControls.outputImage {
+                        outputImage = warmImage
+                    }
+                }
+            }
+            
+        case "dramatic":
+            // 드라마틱: 대비 증가 + 약간의 채도 증가
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                colorControls.setValue(1.3, forKey: kCIInputContrastKey)
+                colorControls.setValue(1.1, forKey: kCIInputSaturationKey)
+                if let dramaticImage = colorControls.outputImage {
+                    outputImage = dramaticImage
+                }
+            }
+            
+        case "cinematic":
+            // 시네마틱: 대비 증가 + 색조 조정
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                colorControls.setValue(1.2, forKey: kCIInputContrastKey)
+                colorControls.setValue(0.95, forKey: kCIInputBrightnessKey)
+                if let cinematicImage = colorControls.outputImage {
+                    outputImage = cinematicImage
+                }
+            }
+            
+        case "mono":
+            // 모노: 흑백 변환 (B&W와 동일)
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                colorControls.setValue(0.0, forKey: kCIInputSaturationKey)
+                if let monoImage = colorControls.outputImage {
+                    outputImage = monoImage
+                }
+            }
+            
+        case "silver":
+            // 실버: 흑백 + 약간의 밝기 증가
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                colorControls.setValue(0.0, forKey: kCIInputSaturationKey)
+                colorControls.setValue(1.1, forKey: kCIInputBrightnessKey)
+                if let silverImage = colorControls.outputImage {
+                    outputImage = silverImage
+                }
+            }
+            
+        case "noir":
+            // 누아르: 흑백 + 대비 증가 + 약간의 어둡게
+            if let colorControls = CIFilter(name: "CIColorControls") {
+                colorControls.setValue(ciImage, forKey: kCIInputImageKey)
+                colorControls.setValue(0.0, forKey: kCIInputSaturationKey)
+                colorControls.setValue(1.3, forKey: kCIInputContrastKey)
+                colorControls.setValue(0.9, forKey: kCIInputBrightnessKey)
+                if let noirImage = colorControls.outputImage {
+                    outputImage = noirImage
+                }
+            }
+            
+        default:
+            // 알 수 없는 필터는 원본 반환
+            break
+        }
+        
+        guard let cgImage = context.createCGImage(outputImage, from: outputImage.extent) else {
+            return image
+        }
+        
+        return UIImage(cgImage: cgImage)
+    }
+    
+    // MARK: - Apply Adjustments
+    private func applyAdjustments(imagePath: String, adjustments: [String: Any], result: @escaping FlutterResult) {
+        guard let image = UIImage(contentsOfFile: imagePath) else {
+            result(FlutterError(code: "INVALID_IMAGE", message: "Could not load image", details: nil))
+            return
+        }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let correctedImage = self.fixedOrientation(image) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to correct image orientation", details: nil))
+                }
+                return
+            }
+            
+            let adjustedImage = self.applyImageAdjustments(correctedImage, adjustments: adjustments)
+            
+            guard let outputPath = self.saveImage(adjustedImage, prefix: "adjusted") else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "SAVE_ERROR", message: "Failed to save adjusted image", details: nil))
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                result(outputPath)
+            }
+        }
+    }
+    
+    private func applyImageAdjustments(_ image: UIImage, adjustments: [String: Any]) -> UIImage {
+        guard let ciImage = CIImage(image: image) else { return image }
+        let context = CIContext()
+        
+        let originalExtent = ciImage.extent
+        var outputImage: CIImage = ciImage
+        
+        // Brightness, Contrast, Saturation 조정
+        if let colorControls = CIFilter(name: "CIColorControls") {
+            colorControls.setValue(outputImage, forKey: kCIInputImageKey)
+            
+            // 기본값 설정 (변경되지 않은 값도 명시적으로 설정)
+            let brightness = (adjustments["brightness"] as? Double) ?? 0.0
+            let contrast = (adjustments["contrast"] as? Double) ?? 0.0
+            let saturation = (adjustments["saturation"] as? Double) ?? 0.0
+            
+            // CIColorControls의 범위:
+            // Brightness: -1.0 ~ 1.0 (기본값 0.0)
+            // Contrast: 0.0 ~ 4.0 (기본값 1.0)
+            // Saturation: 0.0 ~ 2.0 (기본값 1.0)
+            
+            colorControls.setValue(NSNumber(value: brightness), forKey: kCIInputBrightnessKey)
+            colorControls.setValue(NSNumber(value: 1.0 + contrast), forKey: kCIInputContrastKey) // contrast: -1~1 -> 0~2
+            colorControls.setValue(NSNumber(value: 1.0 + saturation), forKey: kCIInputSaturationKey) // saturation: -1~1 -> 0~2
+            
+            if let adjustedImage = colorControls.outputImage {
+                outputImage = adjustedImage
+            }
+        }
+        
+        // Blur 적용
+        if let blurValue = adjustments["blur"] as? Double, blurValue > 0 {
+            if let blurFilter = CIFilter(name: "CIGaussianBlur") {
+                blurFilter.setValue(outputImage, forKey: kCIInputImageKey)
+                blurFilter.setValue(NSNumber(value: blurValue), forKey: kCIInputRadiusKey)
+                if let blurredImage = blurFilter.outputImage {
+                    outputImage = blurredImage
+                }
+            }
+        }
+        
+        // Sharpen 적용
+        if let sharpenValue = adjustments["sharpen"] as? Double, sharpenValue > 0 {
+            if let sharpenFilter = CIFilter(name: "CIUnsharpMask") {
+                sharpenFilter.setValue(outputImage, forKey: kCIInputImageKey)
+                sharpenFilter.setValue(NSNumber(value: 2.5), forKey: kCIInputRadiusKey) // 반경
+                sharpenFilter.setValue(NSNumber(value: sharpenValue), forKey: kCIInputIntensityKey) // 강도
+                if let sharpenedImage = sharpenFilter.outputImage {
+                    outputImage = sharpenedImage
+                }
+            }
+        }
+        
+        // extent를 원본 이미지 크기로 제한 (blur로 인한 무한대 extent 방지)
+        let finalExtent = outputImage.extent.isInfinite ? originalExtent : outputImage.extent.intersection(originalExtent)
+        
+        guard let cgImage = context.createCGImage(outputImage, from: finalExtent) else {
+            print("❌ CGImage 생성 실패")
+            return image
+        }
+        
+        return UIImage(cgImage: cgImage)
     }
     
     // MARK: - Real-ESRGAN CoreML 모델 실행

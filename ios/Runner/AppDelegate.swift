@@ -17,8 +17,8 @@ import UIKit
       name: "com.aiphotoeditor/ai_model_progress",
       binaryMessenger: controller.binaryMessenger
     )
-    
-    let handler = AIModelHandler()
+      
+      let handler = AIModelHandler()
     handler.setupChannels(methodChannel: aiModelChannel, eventChannel: progressChannel)
     
     GeneratedPluginRegistrant.register(with: self)

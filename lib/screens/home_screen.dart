@@ -38,6 +38,18 @@ class _HomeScreenState extends State<HomeScreen> {
   List<String> _imageHistory = []; // 편집된 이미지들
   int _currentHistoryIndex = -1; // 현재 히스토리 위치 (-1은 최신 편집, -2는 원본)
 
+  // 패널 상태
+  bool _isAIToolsPanelVisible = false;
+  bool _isAdjustmentsPanelVisible = false;
+  bool _isFiltersPanelVisible = false;
+  bool _isCropPanelVisible = false;
+
+  // Adjustments 상태
+  String? _selectedAdjustmentType; // 현재 선택된 조정 타입 (brightness, contrast, etc.)
+  Map<String, double> _currentAdjustments = {};
+  String? _previewImagePath; // 실시간 미리보기 이미지 경로
+  Timer? _previewDebounceTimer;
+
   @override
   void initState() {
     super.initState();
@@ -280,13 +292,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
         if (enhancedPath != null && mounted) {
           _applyResultImage(enhancedPath);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('자동 보정이 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 3),
-            ),
-          );
         } else {
           _showError('이미지 보정에 실패했습니다.');
         }
@@ -317,15 +322,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (resultPath != null && mounted) {
         _applyResultImage(resultPath);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Portrait Mode가 적용되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.',
-            ),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 3),
-          ),
-        );
       } else {
         _showError('Portrait Mode 적용에 실패했습니다.');
       }
@@ -359,13 +355,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
         if (resultPath != null && mounted) {
           _applyResultImage(resultPath);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('배경 제거가 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 3),
-            ),
-          );
         } else {
           _showError('배경 제거에 실패했습니다.');
         }
@@ -379,6 +368,16 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     });
+  }
+
+  Future<void> _performRemove() async {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    // TODO: Remove 기능 구현
+    _showError('Remove 기능은 아직 구현 중입니다.');
   }
 
   Future<void> _performUpscale() async {
@@ -401,13 +400,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
         if (resultPath != null && mounted) {
           _applyResultImage(resultPath);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('해상도 향상이 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 3),
-            ),
-          );
         } else {
           _showError('해상도 향상에 실패했습니다.');
         }
@@ -440,13 +432,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
         if (resultPath != null && mounted) {
           _applyResultImage(resultPath);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('노이즈 제거가 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 3),
-            ),
-          );
         } else {
           _showError('노이즈 제거에 실패했습니다.');
         }
@@ -460,6 +445,70 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     });
+  }
+
+  Future<void> _applyFilter(String filterName) async {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isGenerating = true;
+    });
+
+    try {
+      final resultPath = await _imageService.applyFilter(
+        _selectedImagePath!,
+        filterName,
+      );
+
+      if (resultPath != null && mounted) {
+        _applyResultImage(resultPath);
+      } else {
+        _showError('필터 적용에 실패했습니다.');
+      }
+    } catch (e) {
+      _showError('오류 발생: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isGenerating = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _applyAdjustments(Map<String, double> adjustments) async {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isGenerating = true;
+    });
+
+    try {
+      final resultPath = await _imageService.applyAdjustments(
+        _selectedImagePath!,
+        adjustments,
+      );
+
+      if (resultPath != null && mounted) {
+        _applyResultImage(resultPath);
+      } else {
+        _showError('조정 적용에 실패했습니다.');
+      }
+    } catch (e) {
+      _showError('오류 발생: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isGenerating = false;
+        });
+      }
+    }
   }
 
   /// 모델 다운로드 다이얼로그 표시 (필요한 경우)
@@ -528,39 +577,105 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showAIToolsSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _AIToolsSheet(
-        onRemoveBackground: () {
-          Navigator.pop(context);
-          _performRemoveBackground();
-        },
-        onEnhance: () {
-          Navigator.pop(context);
-          _performAutoEnhance();
-        },
-        onPortraitMode: () {
-          Navigator.pop(context);
-          _performPortraitMode();
-        },
-        onUpscale: () {
-          Navigator.pop(context);
-          _performUpscale();
-        },
-        onReduceNoise: () {
-          Navigator.pop(context);
-          _performReduceNoise();
-        },
-      ),
-    );
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isAIToolsPanelVisible = true;
+      _isAdjustmentsPanelVisible = false;
+      _isFiltersPanelVisible = false;
+      _isCropPanelVisible = false;
+    });
+  }
+
+  void _showAdjustmentsSheet() {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isAIToolsPanelVisible = false;
+      _isAdjustmentsPanelVisible = true;
+      _isFiltersPanelVisible = false;
+      _isCropPanelVisible = false;
+      _selectedAdjustmentType = 'brightness'; // 기본값
+      _currentAdjustments = {};
+      _previewImagePath = null;
+    });
+  }
+
+  void _hideAdjustmentsPanel() {
+    setState(() {
+      _isAdjustmentsPanelVisible = false;
+      _selectedAdjustmentType = null;
+      _currentAdjustments = {};
+      _previewImagePath = null;
+    });
+  }
+
+  Future<void> _updatePreview(Map<String, double> adjustments) async {
+    if (_selectedImagePath == null) return;
+
+    setState(() {
+      _currentAdjustments = adjustments;
+    });
+
+    // Debounce: 300ms 후에 미리보기 업데이트
+    _previewDebounceTimer?.cancel();
+    _previewDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      try {
+        final resultPath = await _imageService.applyAdjustments(
+          _selectedImagePath!,
+          adjustments,
+        );
+
+        if (resultPath != null && mounted) {
+          setState(() {
+            _previewImagePath = resultPath;
+          });
+        }
+      } catch (e) {
+        print('Preview 업데이트 실패: $e');
+      }
+    });
+  }
+
+  void _showFiltersSheet() {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isAIToolsPanelVisible = false;
+      _isAdjustmentsPanelVisible = false;
+      _isFiltersPanelVisible = true;
+      _isCropPanelVisible = false;
+    });
+  }
+
+  void _showCropSheet() {
+    if (_selectedImagePath == null) {
+      _showError('이미지를 선택해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isAIToolsPanelVisible = false;
+      _isAdjustmentsPanelVisible = false;
+      _isFiltersPanelVisible = false;
+      _isCropPanelVisible = true;
+    });
   }
 
   @override
   void dispose() {
     _promptController.dispose();
     _negativePromptController.dispose();
+    _previewDebounceTimer?.cancel();
     super.dispose();
   }
 
@@ -654,8 +769,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: _selectedImageFile != null
                             ? Stack(
                                 children: [
+                                  // 미리보기 이미지가 있으면 표시, 없으면 원본
                                   Image.file(
-                                    _selectedImageFile!,
+                                    _previewImagePath != null
+                                        ? File(_previewImagePath!)
+                                        : _selectedImageFile!,
                                     fit: BoxFit.contain,
                                   ),
                                   if (_maskImagePath != null)
@@ -701,6 +819,204 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+              // Adjustments Panel (사진 아래 고정)
+              if (_isAdjustmentsPanelVisible)
+                Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 조정 타입 선택 버튼들
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          _buildAdjustmentTypeButton(
+                            'brightness',
+                            Icons.wb_sunny,
+                            'Brightness',
+                          ),
+                          _buildAdjustmentTypeButton(
+                            'contrast',
+                            Icons.contrast,
+                            'Contrast',
+                          ),
+                          _buildAdjustmentTypeButton(
+                            'saturation',
+                            Icons.palette,
+                            'Saturation',
+                          ),
+                          _buildAdjustmentTypeButton(
+                            'blur',
+                            Icons.blur_on,
+                            'Blur',
+                          ),
+                          _buildAdjustmentTypeButton(
+                            'sharpen',
+                            Icons.center_focus_strong,
+                            'Sharpen',
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      // 선택된 조정의 슬라이더
+                      if (_selectedAdjustmentType != null)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: _buildAdjustmentSliderForType(
+                            _selectedAdjustmentType!,
+                          ),
+                        ),
+                      const SizedBox(height: 10),
+                      // Apply 및 Reset 버튼
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            TextButton.icon(
+                              onPressed: () {
+                                _hideAdjustmentsPanel();
+                                if (_originalImagePath != null) {
+                                  _applyResultImage(_originalImagePath!);
+                                }
+                              },
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Reset'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.grey.shade700,
+                              ),
+                            ),
+                            ElevatedButton(
+                              onPressed: () {
+                                _hideAdjustmentsPanel();
+                                _applyAdjustments(_currentAdjustments);
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.purple,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 32,
+                                  vertical: 12,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                              child: const Text('Apply'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              // AI Tools Panel (사진 아래 고정)
+              if (_isAIToolsPanelVisible)
+                Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // AI 도구 버튼들
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Row(
+                          children: [
+                            _buildAIToolButton(
+                              Icons.auto_fix_high,
+                              'Auto Enhance',
+                              _performAutoEnhance,
+                            ),
+                            const SizedBox(width: 12),
+                            _buildAIToolButton(
+                              Icons.face,
+                              'Portrait',
+                              _performPortraitMode,
+                            ),
+                            const SizedBox(width: 12),
+                            _buildAIToolButton(
+                              Icons.content_cut,
+                              'Remove BG',
+                              _performRemoveBackground,
+                            ),
+                            const SizedBox(width: 12),
+                            _buildAIToolButton(
+                              Icons.cleaning_services,
+                              'Remove',
+                              _performRemove,
+                            ),
+                            const SizedBox(width: 12),
+                            _buildAIToolButton(
+                              Icons.flash_on,
+                              'Denoise',
+                              _performReduceNoise,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Tap a tool to apply AI enhancements',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              // Filters Panel (사진 아래 고정)
+              if (_isFiltersPanelVisible)
+                Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 필터 미리보기
+                      SizedBox(
+                        height: 120,
+                        child: ListView(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          children: [
+                            _buildFilterPreview('Original', Colors.grey),
+                            const SizedBox(width: 12),
+                            _buildFilterPreview('Vivid', Colors.pink),
+                            const SizedBox(width: 12),
+                            _buildFilterPreview('Dramatic', Colors.purple),
+                            const SizedBox(width: 12),
+                            _buildFilterPreview('Mono', Colors.grey.shade600),
+                            const SizedBox(width: 12),
+                            _buildFilterPreview('Silver', Colors.grey.shade400),
+                            const SizedBox(width: 12),
+                            _buildFilterPreview('Noir', Colors.black87),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Tap a filter to preview',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              // Crop Panel (사진 아래 고정)
+              if (_isCropPanelVisible)
+                Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'Crop 기능은 아직 구현 중입니다',
+                        style: TextStyle(fontSize: 16, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
               // 하단 네비게이션 바
               Container(
                 height: 80,
@@ -723,9 +1039,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       0,
                       Colors.purple,
                     ),
-                    _buildNavItem(Icons.tune, 'Adjust', 1, Colors.grey),
-                    _buildNavItem(Icons.filter, 'Filters', 2, Colors.grey),
-                    _buildNavItem(Icons.crop, 'Crop', 3, Colors.grey),
+                    _buildNavItem(Icons.tune, 'Adjust', 1, Colors.purple),
+                    _buildNavItem(Icons.filter, 'Filters', 2, Colors.purple),
+                    _buildNavItem(Icons.crop, 'Crop', 3, Colors.purple),
                   ],
                 ),
               ),
@@ -733,6 +1049,184 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAIToolButton(IconData icon, String label, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: () {
+        onTap();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.purple, size: 28),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Colors.black87,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterPreview(String filterName, Color color) {
+    return GestureDetector(
+      onTap: () {
+        _applyFilter(filterName);
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 80,
+            height: 80,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.shade300, width: 1),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            filterName,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAdjustmentTypeButton(String type, IconData icon, String label) {
+    final isSelected = _selectedAdjustmentType == type;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _selectedAdjustmentType = type;
+        });
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              color: isSelected ? Colors.purple : Colors.grey.shade200,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              icon,
+              color: isSelected ? Colors.white : Colors.grey.shade700,
+              size: 28,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: isSelected ? Colors.purple : Colors.grey.shade700,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAdjustmentSliderForType(String type) {
+    final currentValue = _currentAdjustments[type] ?? 0.0;
+    double min, max;
+    String label;
+
+    switch (type) {
+      case 'brightness':
+        min = -1.0;
+        max = 1.0;
+        label = 'Brightness';
+        break;
+      case 'contrast':
+        min = -1.0;
+        max = 1.0;
+        label = 'Contrast';
+        break;
+      case 'saturation':
+        min = -1.0;
+        max = 1.0;
+        label = 'Saturation';
+        break;
+      case 'blur':
+        min = 0.0;
+        max = 10.0;
+        label = 'Blur';
+        break;
+      case 'sharpen':
+        min = 0.0;
+        max = 2.0;
+        label = 'Sharpen';
+        break;
+      default:
+        min = -1.0;
+        max = 1.0;
+        label = type;
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
+              ),
+            ),
+            Text(
+              currentValue.toStringAsFixed(0),
+              style: const TextStyle(
+                fontSize: 16,
+                color: Colors.black54,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Slider(
+          value: currentValue,
+          min: min,
+          max: max,
+          onChanged: (value) {
+            final newAdjustments = Map<String, double>.from(
+              _currentAdjustments,
+            );
+            newAdjustments[type] = value;
+            setState(() {
+              _currentAdjustments = newAdjustments;
+            });
+            _updatePreview(newAdjustments);
+          },
+          activeColor: Colors.purple,
+        ),
+      ],
     );
   }
 
@@ -745,10 +1239,20 @@ class _HomeScreenState extends State<HomeScreen> {
         });
         if (index == 0) {
           _showAIToolsSheet();
+        } else if (index == 1) {
+          _showAdjustmentsSheet();
+        } else if (index == 2) {
+          _showFiltersSheet();
+        } else if (index == 3) {
+          _showCropSheet();
         }
       },
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withOpacity(0.1) : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1021,6 +1525,670 @@ class _AIToolsSheet extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+// Adjustments Floating Panel
+class _AdjustmentsFloatingPanel extends StatefulWidget {
+  final Function(String, double) onAdjustmentChanged;
+  final Function(Map<String, double>) onApply;
+  final VoidCallback onReset;
+  final VoidCallback onClose;
+  final Function(Offset) onPositionChanged;
+  final Offset initialPosition;
+
+  const _AdjustmentsFloatingPanel({
+    required this.onAdjustmentChanged,
+    required this.onApply,
+    required this.onReset,
+    required this.onClose,
+    required this.onPositionChanged,
+    required this.initialPosition,
+  });
+
+  @override
+  State<_AdjustmentsFloatingPanel> createState() =>
+      _AdjustmentsFloatingPanelState();
+}
+
+class _AdjustmentsFloatingPanelState extends State<_AdjustmentsFloatingPanel> {
+  late Offset _position;
+  double _brightness = 0.0;
+  double _contrast = 0.0;
+  double _saturation = 0.0;
+  double _blur = 0.0;
+  double _sharpen = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _position = widget.initialPosition;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    final maxWidth = screenSize.width * 0.9;
+    final maxHeight = screenSize.height * 0.7;
+
+    return Positioned(
+      left: _position.dx.clamp(0.0, screenSize.width - maxWidth),
+      top: _position.dy.clamp(0.0, screenSize.height - maxHeight),
+      child: Draggable(
+        feedback: Material(
+          color: Colors.transparent,
+          child: Container(
+            width: maxWidth,
+            height: maxHeight,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.white.withOpacity(0.3),
+                width: 1.5,
+              ),
+            ),
+          ),
+        ),
+        onDragEnd: (details) {
+          final newPosition = Offset(
+            details.offset.dx.clamp(0.0, screenSize.width - maxWidth),
+            details.offset.dy.clamp(0.0, screenSize.height - maxHeight),
+          );
+          setState(() {
+            _position = newPosition;
+          });
+          widget.onPositionChanged(newPosition);
+        },
+        childWhenDragging: Container(
+          width: maxWidth,
+          height: maxHeight,
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(20),
+          ),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+            child: Container(
+              width: maxWidth,
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: Colors.white.withOpacity(0.3),
+                  width: 1.5,
+                ),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 드래그 핸들 및 헤더
+                  GestureDetector(
+                    onPanUpdate: (details) {
+                      setState(() {
+                        _position = Offset(
+                          (_position.dx + details.delta.dx).clamp(
+                            0.0,
+                            screenSize.width - maxWidth,
+                          ),
+                          (_position.dy + details.delta.dy).clamp(
+                            0.0,
+                            screenSize.height - maxHeight,
+                          ),
+                        );
+                      });
+                      widget.onPositionChanged(_position);
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Adjustments',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
+                            ),
+                          ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton.icon(
+                                onPressed: widget.onReset,
+                                icon: const Icon(Icons.refresh, size: 16),
+                                label: const Text('Reset'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.black87,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.close, size: 20),
+                                onPressed: widget.onClose,
+                                color: Colors.black87,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  // 조정 옵션 리스트
+                  Flexible(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        children: [
+                          _buildAdjustmentSlider(
+                            'Brightness',
+                            _brightness,
+                            -1.0,
+                            1.0,
+                            (value) {
+                              setState(() {
+                                _brightness = value;
+                              });
+                              widget.onAdjustmentChanged('brightness', value);
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          _buildAdjustmentSlider(
+                            'Contrast',
+                            _contrast,
+                            -1.0,
+                            1.0,
+                            (value) {
+                              setState(() {
+                                _contrast = value;
+                              });
+                              widget.onAdjustmentChanged('contrast', value);
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          _buildAdjustmentSlider(
+                            'Saturation',
+                            _saturation,
+                            -1.0,
+                            1.0,
+                            (value) {
+                              setState(() {
+                                _saturation = value;
+                              });
+                              widget.onAdjustmentChanged('saturation', value);
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          _buildAdjustmentSlider('Blur', _blur, 0.0, 10.0, (
+                            value,
+                          ) {
+                            setState(() {
+                              _blur = value;
+                            });
+                            widget.onAdjustmentChanged('blur', value);
+                          }),
+                          const SizedBox(height: 20),
+                          _buildAdjustmentSlider(
+                            'Sharpen',
+                            _sharpen,
+                            0.0,
+                            2.0,
+                            (value) {
+                              setState(() {
+                                _sharpen = value;
+                              });
+                              widget.onAdjustmentChanged('sharpen', value);
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          // Apply 버튼
+                          ElevatedButton(
+                            onPressed: () {
+                              widget.onApply({
+                                'brightness': _brightness,
+                                'contrast': _contrast,
+                                'saturation': _saturation,
+                                'blur': _blur,
+                                'sharpen': _sharpen,
+                              });
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.purple,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 14,
+                                horizontal: 32,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text(
+                              'Apply',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAdjustmentSlider(
+    String label,
+    double value,
+    double min,
+    double max,
+    ValueChanged<double> onChanged,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
+              ),
+            ),
+            Text(
+              value.toStringAsFixed(0),
+              style: const TextStyle(
+                fontSize: 14,
+                color: Colors.black54,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Slider(
+          value: value,
+          min: min,
+          max: max,
+          onChanged: onChanged,
+          activeColor: Colors.purple,
+        ),
+      ],
+    );
+  }
+}
+
+// Adjustments 모달 시트
+class _AdjustmentsSheet extends StatefulWidget {
+  final Function(String, double) onAdjustmentChanged;
+  final Function(Map<String, double>) onApply;
+  final VoidCallback onReset;
+
+  const _AdjustmentsSheet({
+    required this.onAdjustmentChanged,
+    required this.onApply,
+    required this.onReset,
+  });
+
+  @override
+  State<_AdjustmentsSheet> createState() => _AdjustmentsSheetState();
+}
+
+class _AdjustmentsSheetState extends State<_AdjustmentsSheet> {
+  double _brightness = 0.0;
+  double _contrast = 0.0;
+  double _saturation = 0.0;
+  double _blur = 0.0;
+  double _sharpen = 0.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.7,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      builder: (context, scrollController) {
+        return ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.3),
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(20),
+                ),
+                border: Border.all(
+                  color: Colors.white.withOpacity(0.3),
+                  width: 1.5,
+                ),
+              ),
+              child: Column(
+                children: [
+                  // 핸들
+                  Container(
+                    margin: const EdgeInsets.symmetric(vertical: 12),
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  // 헤더
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Adjustments',
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            TextButton.icon(
+                              onPressed: widget.onReset,
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text('Reset'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.grey.shade700,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close),
+                              onPressed: () => Navigator.pop(context),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(),
+                  // 조정 옵션 리스트
+                  Expanded(
+                    child: ListView(
+                      controller: scrollController,
+                      padding: const EdgeInsets.all(20),
+                      children: [
+                        _buildAdjustmentSlider(
+                          'Brightness',
+                          _brightness,
+                          -1.0,
+                          1.0,
+                          (value) {
+                            setState(() {
+                              _brightness = value;
+                            });
+                            widget.onAdjustmentChanged('brightness', value);
+                          },
+                        ),
+                        const SizedBox(height: 24),
+                        _buildAdjustmentSlider(
+                          'Contrast',
+                          _contrast,
+                          -1.0,
+                          1.0,
+                          (value) {
+                            setState(() {
+                              _contrast = value;
+                            });
+                            widget.onAdjustmentChanged('contrast', value);
+                          },
+                        ),
+                        const SizedBox(height: 24),
+                        _buildAdjustmentSlider(
+                          'Saturation',
+                          _saturation,
+                          -1.0,
+                          1.0,
+                          (value) {
+                            setState(() {
+                              _saturation = value;
+                            });
+                            widget.onAdjustmentChanged('saturation', value);
+                          },
+                        ),
+                        const SizedBox(height: 24),
+                        _buildAdjustmentSlider('Blur', _blur, 0.0, 10.0, (
+                          value,
+                        ) {
+                          setState(() {
+                            _blur = value;
+                          });
+                          widget.onAdjustmentChanged('blur', value);
+                        }),
+                        const SizedBox(height: 24),
+                        _buildAdjustmentSlider('Sharpen', _sharpen, 0.0, 2.0, (
+                          value,
+                        ) {
+                          setState(() {
+                            _sharpen = value;
+                          });
+                          widget.onAdjustmentChanged('sharpen', value);
+                        }),
+                        const SizedBox(height: 32),
+                        // Apply 버튼
+                        ElevatedButton(
+                          onPressed: () {
+                            widget.onApply({
+                              'brightness': _brightness,
+                              'contrast': _contrast,
+                              'saturation': _saturation,
+                              'blur': _blur,
+                              'sharpen': _sharpen,
+                            });
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.purple,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: const Text(
+                            'Apply',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildAdjustmentSlider(
+    String label,
+    double value,
+    double min,
+    double max,
+    ValueChanged<double> onChanged,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            Text(
+              value.toStringAsFixed(0),
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.grey.shade600,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Slider(
+          value: value,
+          min: min,
+          max: max,
+          onChanged: onChanged,
+          activeColor: Colors.purple,
+        ),
+      ],
+    );
+  }
+}
+
+// Filters 모달 시트
+class _FiltersSheet extends StatelessWidget {
+  final Function(String) onFilterSelected;
+
+  const _FiltersSheet({required this.onFilterSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    final filters = [
+      {'name': 'Original', 'icon': Icons.filter_none, 'color': Colors.grey},
+      {'name': 'Vivid', 'icon': Icons.color_lens, 'color': Colors.pink},
+      {'name': 'Dramatic', 'icon': Icons.auto_awesome, 'color': Colors.purple},
+      {'name': 'Warm', 'icon': Icons.wb_sunny, 'color': Colors.orange},
+      {'name': 'Cool', 'icon': Icons.ac_unit, 'color': Colors.blue},
+      {'name': 'Vintage', 'icon': Icons.camera_alt, 'color': Colors.brown},
+      {'name': 'B&W', 'icon': Icons.tonality, 'color': Colors.black},
+      {'name': 'Cinematic', 'icon': Icons.movie, 'color': Colors.indigo},
+    ];
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.4,
+      maxChildSize: 0.9,
+      builder: (context, scrollController) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              // 핸들
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              // 헤더
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Filters',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(),
+              // 필터 그리드
+              Expanded(
+                child: GridView.builder(
+                  controller: scrollController,
+                  padding: const EdgeInsets.all(20),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 4,
+                    crossAxisSpacing: 16,
+                    mainAxisSpacing: 16,
+                    childAspectRatio: 0.8,
+                  ),
+                  itemCount: filters.length,
+                  itemBuilder: (context, index) {
+                    final filter = filters[index];
+                    return GestureDetector(
+                      onTap: () => onFilterSelected(filter['name'] as String),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              filter['icon'] as IconData,
+                              color: filter['color'] as Color,
+                              size: 32,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              filter['name'] as String,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade700,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
