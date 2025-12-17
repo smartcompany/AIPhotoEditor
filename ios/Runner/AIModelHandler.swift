@@ -457,6 +457,78 @@ class AIModelHandler: NSObject, FlutterStreamHandler {
         return UIImage(cgImage: cgImage)
     }
     
+    // MLMultiArray (NCHW 형식, RGB) -> UIImage 변환
+    // shape: [1, 3, H, W] 또는 [1, C, H, W]
+    private func multiArrayToRGBImage(_ array: MLMultiArray) -> UIImage? {
+        let shape = array.shape.map { $0.intValue }
+        print("📋 MultiArray shape: \(shape)")
+        
+        guard shape.count == 4 else {
+            print("❌ 예상하지 못한 shape: \(shape)")
+            return nil
+        }
+        
+        // NCHW 형식: [배치, 채널, 높이, 너비]
+        let batch = shape[0]
+        let channels = shape[1]
+        let height = shape[2]
+        let width = shape[3]
+        
+        guard batch == 1, channels == 3 else {
+            print("❌ 예상하지 못한 배치/채널: batch=\(batch), channels=\(channels)")
+            return nil
+        }
+        
+        let pixelCount = width * height
+        guard pixelCount > 0 else { return nil }
+        
+        // Float32 배열로 가정
+        let ptr = UnsafeMutablePointer<Float32>(OpaquePointer(array.dataPointer))
+        
+        // RGBA 픽셀 데이터 생성
+        var pixels = [UInt8](repeating: 0, count: pixelCount * 4)
+        
+        // NCHW -> RGBA 변환
+        // 인덱스 계산: n * (C*H*W) + c * (H*W) + h * W + w
+        for h in 0..<height {
+            for w in 0..<width {
+                let pixelIndex = (h * width + w) * 4
+                
+                // R, G, B 채널 읽기
+                let rIndex = 0 * (height * width) + h * width + w
+                let gIndex = 1 * (height * width) + h * width + w
+                let bIndex = 2 * (height * width) + h * width + w
+                
+                // 0-1 범위로 정규화된 값이라고 가정하고 0-255로 변환
+                let r = max(0.0, min(1.0, Double(ptr[rIndex])))
+                let g = max(0.0, min(1.0, Double(ptr[gIndex])))
+                let b = max(0.0, min(1.0, Double(ptr[bIndex])))
+                
+                pixels[pixelIndex] = UInt8(r * 255.0)     // R
+                pixels[pixelIndex + 1] = UInt8(g * 255.0) // G
+                pixels[pixelIndex + 2] = UInt8(b * 255.0) // B
+                pixels[pixelIndex + 3] = 255               // A (불투명)
+            }
+        }
+        
+        // CGContext로 이미지 생성
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+        
+        guard let cgImage = context.makeImage() else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+    
     // 이미지 리사이즈 헬퍼 함수
     private func resizeImage(_ image: UIImage, to size: CGSize) -> UIImage? {
         UIGraphicsBeginImageContextWithOptions(size, false, image.scale)
@@ -654,8 +726,23 @@ class AIModelHandler: NSObject, FlutterStreamHandler {
                 return
             }
             
-            // Real-ESRGAN x2 모델 사용 (향상 후 원본 크기로 리사이즈)
-            if let processedImage = self.runRealESRGAN(correctedImage, scale: 2) {
+            // Real-ESRGAN x2 모델 로드 및 다운로드 확인
+            self.loadRealESRGANModel { [weak self] success in
+                guard let self = self, success else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "MODEL_LOAD_ERROR", message: "Failed to load Real-ESRGAN model for auto enhance", details: nil))
+                    }
+                    return
+                }
+                
+                // Real-ESRGAN x2 모델 사용 (향상 후 원본 크기로 리사이즈)
+                guard let processedImage = self.runRealESRGAN(correctedImage, scale: 2) else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "MODEL_EXECUTION_ERROR", message: "Failed to execute Real-ESRGAN model", details: nil))
+                    }
+                    return
+                }
+                
                 // 원본 크기로 리사이즈 (향상만 하고 크기는 유지)
                 let originalSize = correctedImage.size
                 guard let resizedImage = self.resizeImage(processedImage, to: originalSize) else {
@@ -675,49 +762,8 @@ class AIModelHandler: NSObject, FlutterStreamHandler {
                 DispatchQueue.main.async {
                     result(outputPath)
                 }
-            } else {
-                // 모델이 없으면 필터 폴백
-                let processedImage = self.applyAutoEnhanceFilter(correctedImage)
-                guard let outputPath = self.saveImage(processedImage, prefix: "enhanced") else {
-                    DispatchQueue.main.async {
-                        result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
-                    }
-                    return
-                }
-                
-                DispatchQueue.main.async {
-                    result(outputPath)
-                }
             }
         }
-    }
-    
-    // Auto Enhance 필터 적용 (임시 구현)
-    private func applyAutoEnhanceFilter(_ image: UIImage) -> UIImage {
-        guard let ciImage = CIImage(image: image) else { return image }
-        
-        let context = CIContext()
-        
-        // 밝기/대비/채도 조정
-        guard let colorControls = CIFilter(name: "CIColorControls") else { return image }
-        colorControls.setValue(ciImage, forKey: kCIInputImageKey)
-        colorControls.setValue(1.05, forKey: kCIInputBrightnessKey) // 밝기 증가
-        colorControls.setValue(1.08, forKey: kCIInputContrastKey) // 대비 증가
-        colorControls.setValue(1.05, forKey: kCIInputSaturationKey) // 채도 증가
-        guard let adjustedImage = colorControls.outputImage else { return image }
-        
-        // 선명도 향상
-        guard let sharpenFilter = CIFilter(name: "CIUnsharpMask") else { return image }
-        sharpenFilter.setValue(adjustedImage, forKey: kCIInputImageKey)
-        sharpenFilter.setValue(1.5, forKey: kCIInputRadiusKey)
-        sharpenFilter.setValue(1.5, forKey: kCIInputIntensityKey)
-        guard let sharpenedImage = sharpenFilter.outputImage else { return image }
-        
-        guard let cgImage = context.createCGImage(sharpenedImage, from: ciImage.extent) else {
-            return image
-        }
-        
-        return UIImage(cgImage: cgImage)
     }
     
     // MARK: - Upscale (Real-ESRGAN)
@@ -845,41 +891,39 @@ class AIModelHandler: NSObject, FlutterStreamHandler {
             
             // Real-ESRGAN x2 모델 로드 및 다운로드 확인
             self.loadRealESRGANModel { [weak self] success in
-                guard let self = self else { return }
+                guard let self = self, success else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "MODEL_LOAD_ERROR", message: "Failed to load Real-ESRGAN model for reduce noise", details: nil))
+                    }
+                    return
+                }
                 
-                if success, let processedImage = self.runRealESRGAN(correctedImage, scale: 2) {
-                    // 원본 크기로 리사이즈 (노이즈 제거만 하고 크기는 유지)
-                    let originalSize = correctedImage.size
-                    guard let resizedImage = self.resizeImage(processedImage, to: originalSize) else {
-                        DispatchQueue.main.async {
-                            result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to resize denoised image", details: nil))
-                        }
-                        return
-                    }
-                    
-                    guard let outputPath = self.saveImage(resizedImage, prefix: "denoise") else {
-                        DispatchQueue.main.async {
-                            result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
-                        }
-                        return
-                    }
-                    
+                // Real-ESRGAN x2 모델 사용
+                guard let processedImage = self.runRealESRGAN(correctedImage, scale: 2) else {
                     DispatchQueue.main.async {
-                        result(outputPath)
+                        result(FlutterError(code: "MODEL_EXECUTION_ERROR", message: "Failed to execute Real-ESRGAN model", details: nil))
                     }
-                } else {
-                    // 모델이 없으면 필터 폴백
-                    let processedImage = self.applyDenoiseFilter(correctedImage)
-                    guard let outputPath = self.saveImage(processedImage, prefix: "denoise") else {
-                        DispatchQueue.main.async {
-                            result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
-                        }
-                        return
-                    }
-                    
+                    return
+                }
+                
+                // 원본 크기로 리사이즈 (노이즈 제거만 하고 크기는 유지)
+                let originalSize = correctedImage.size
+                guard let resizedImage = self.resizeImage(processedImage, to: originalSize) else {
                     DispatchQueue.main.async {
-                        result(outputPath)
+                        result(FlutterError(code: "IMAGE_PROCESSING_ERROR", message: "Failed to resize denoised image", details: nil))
                     }
+                    return
+                }
+                
+                guard let outputPath = self.saveImage(resizedImage, prefix: "denoise") else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "SAVE_ERROR", message: "Failed to save processed image", details: nil))
+                    }
+                    return
+                }
+                
+                DispatchQueue.main.async {
+                    result(outputPath)
                 }
             }
         }
@@ -943,68 +987,175 @@ class AIModelHandler: NSObject, FlutterStreamHandler {
         return nil
     }
     
-    private func runRealESRGAN(_ image: UIImage, scale: Int) -> UIImage? {
-        // 항상 x2 모델 사용 (scale 파라미터는 호환성을 위해 유지)
-        guard let model = loadRealESRGANModelSync() else {
+    // 모델의 허용되는 입력 크기 확인
+    private func getAllowedInputSize(for model: MLModel) -> CGSize? {
+        let modelDescription = model.modelDescription
+        let inputDescription = modelDescription.inputDescriptionsByName
+        
+        guard let firstInput = inputDescription.values.first else {
             return nil
         }
         
-        // 이미지를 모델 입력 크기로 리사이즈 (일반적으로 512x512 또는 원본 크기)
-        // Real-ESRGAN은 다양한 입력 크기를 지원하지만, 메모리 효율을 위해 타일링 처리 필요할 수 있음
-        let inputSize = image.size
-        guard let pixelBuffer = imageToPixelBuffer(image, size: inputSize) else {
+        // Image 타입인 경우 크기 제약 확인
+        // CoreML 모델의 입력 제약 확인 시도
+        if firstInput.type == .image {
+            // 일반적으로 Real-ESRGAN 모델은 512x512 또는 1024x1024를 허용
+            // 에러 메시지에서 허용되지 않는 크기를 확인했으므로, 더 작은 크기로 시도
+            // 일반적으로 512x512 또는 1024x1024가 안전한 크기
+            return CGSize(width: 512, height: 512)
+        }
+        
+        return nil
+    }
+    
+    // 이미지를 모델이 허용하는 크기로 리사이즈
+    // Real-ESRGAN 모델은 보통 정사각형 크기나 64의 배수를 요구
+    private func resizeImageToAllowedSize(_ image: UIImage, allowedSize: CGSize) -> UIImage? {
+        let imageSize = image.size
+        
+        // 정사각형 크기로 리사이즈 (일반적으로 Real-ESRGAN은 정사각형을 선호)
+        // 64의 배수로 맞추기
+        let maxDimension = max(imageSize.width, imageSize.height)
+        var targetSize: CGFloat = 512.0
+        
+        // 64의 배수로 가장 가까운 크기 선택
+        if maxDimension <= 256 {
+            targetSize = 256
+        } else if maxDimension <= 512 {
+            targetSize = 512
+        } else if maxDimension <= 768 {
+            targetSize = 512 // 768은 허용되지 않을 수 있으므로 512 사용
+        } else if maxDimension <= 1024 {
+            targetSize = 512 // 안전하게 512 사용
+        } else {
+            targetSize = 512 // 큰 이미지는 512로 제한
+        }
+        
+        // 정사각형으로 리사이즈
+        let squareSize = CGSize(width: targetSize, height: targetSize)
+        return resizeImage(image, to: squareSize)
+    }
+    
+    private func runRealESRGAN(_ image: UIImage, scale: Int) -> UIImage? {
+        // 항상 x2 모델 사용 (scale 파라미터는 호환성을 위해 유지)
+        guard let model = realesrganX2Model else {
+            print("❌ Real-ESRGAN 모델이 로드되지 않음")
+            return nil
+        }
+        
+        // 모델의 입력/출력 이름 확인
+        let modelDescription = model.modelDescription
+        let inputDescription = modelDescription.inputDescriptionsByName
+        let outputDescription = modelDescription.outputDescriptionsByName
+        
+        print("📋 Real-ESRGAN 모델 입력: \(inputDescription.keys.joined(separator: ", "))")
+        print("📋 Real-ESRGAN 모델 출력: \(outputDescription.keys.joined(separator: ", "))")
+        
+        // 첫 번째 입력/출력 이름 사용
+        guard let inputName = inputDescription.keys.first,
+              let outputName = outputDescription.keys.first else {
+            print("❌ 모델 입력/출력 이름을 찾을 수 없음")
+            return nil
+        }
+        
+        // 출력 description 확인
+        if let outputDesc = outputDescription[outputName] {
+            print("📋 출력 타입: \(outputDesc.type)")
+            if let imageConstraint = outputDesc.imageConstraint {
+                print("📋 출력 이미지 제약: \(imageConstraint)")
+            }
+        }
+        
+        // 모델의 허용되는 입력 크기 확인
+        let originalSize = image.size
+        var processedImage = image
+        var needsResize = false
+        
+        // Real-ESRGAN 모델은 정사각형 크기를 요구하므로 항상 정사각형으로 리사이즈
+        // 원본이 정사각형이 아니거나 허용 크기보다 큰 경우 리사이즈
+        if let allowedSize = getAllowedInputSize(for: model) {
+            print("📐 모델 허용 크기: \(allowedSize.width)x\(allowedSize.height)")
+            print("📐 원본 이미지 크기: \(originalSize.width)x\(originalSize.height)")
+            
+            // 정사각형이 아니거나 허용 크기보다 큰 경우 리사이즈
+            let isSquare = abs(originalSize.width - originalSize.height) < 1.0
+            let isTooLarge = originalSize.width > allowedSize.width || originalSize.height > allowedSize.height
+            
+            if !isSquare || isTooLarge {
+                needsResize = true
+                guard let resized = resizeImageToAllowedSize(image, allowedSize: allowedSize) else {
+                    print("❌ 이미지 리사이즈 실패")
+                    return nil
+                }
+                processedImage = resized
+                print("📐 리사이즈된 이미지 크기: \(processedImage.size.width)x\(processedImage.size.height)")
+            }
+        }
+        
+        guard let pixelBuffer = imageToPixelBuffer(processedImage, size: processedImage.size) else {
             print("❌ 이미지를 PixelBuffer로 변환 실패")
             return nil
         }
         
         do {
             // 모델 입력 생성 (실제 모델의 입력 형식에 맞춰야 함)
-            // Real-ESRGAN CoreML 모델의 입력 형식에 따라 조정 필요
-            let input = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(pixelBuffer: pixelBuffer)])
+            let input = try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(pixelBuffer: pixelBuffer)])
             
             // 모델 실행
             let prediction = try model.prediction(from: input)
             
             // 출력 추출 (실제 모델의 출력 형식에 맞춰야 함)
-            guard let outputFeature = prediction.featureValue(for: "output"),
-                  let outputPixelBuffer = outputFeature.imageBufferValue else {
-                print("❌ 모델 출력 추출 실패")
+            guard let outputFeature = prediction.featureValue(for: outputName) else {
+                print("❌ 모델 출력 feature를 찾을 수 없음 - 출력 이름: \(outputName)")
+                print("📋 사용 가능한 출력: \(prediction.featureNames.joined(separator: ", "))")
                 return nil
             }
             
-            // PixelBuffer를 UIImage로 변환
-            return pixelBufferToImage(outputPixelBuffer)
+            print("📋 출력 feature 타입: \(outputFeature.type)")
+            
+            var resultImage: UIImage?
+            
+            // 출력이 Image 타입인 경우
+            if let outputPixelBuffer = outputFeature.imageBufferValue {
+                resultImage = pixelBufferToImage(outputPixelBuffer)
+            }
+            // 출력이 MultiArray 타입인 경우 (MLMultiArray -> UIImage 변환 필요)
+            else if let multiArray = outputFeature.multiArrayValue {
+                print("📋 출력이 MultiArray 타입입니다. shape: \(multiArray.shape.map { $0.intValue })")
+                // MultiArray를 UIImage로 변환
+                resultImage = multiArrayToRGBImage(multiArray)
+                if resultImage == nil {
+                    print("❌ MultiArray를 UIImage로 변환 실패")
+                    return nil
+                }
+            }
+            // 다른 타입인 경우
+            else {
+                print("❌ 지원되지 않는 출력 타입: \(outputFeature.type)")
+                return nil
+            }
+            
+            guard let finalResultImage = resultImage else {
+                print("❌ 출력을 UIImage로 변환 실패")
+                return nil
+            }
+            
+            // 원본 크기로 리사이즈가 필요한 경우 (auto enhance, reduce noise)
+            if needsResize {
+                guard let finalImage = resizeImage(finalResultImage, to: originalSize) else {
+                    print("❌ 결과 이미지를 원본 크기로 리사이즈 실패")
+                    return nil
+                }
+                return finalImage
+            }
+            
+            return finalResultImage
             
         } catch {
-            print("❌ Real-ESRGAN 모델 실행 실패: \(error)")
+            print("❌ Real-ESRGAN 모델 실행 실패: \(error.localizedDescription)")
+            print("❌ 에러 상세: \(error)")
             return nil
         }
-    }
-    
-    // Denoise 필터 적용 (임시 구현)
-    private func applyDenoiseFilter(_ image: UIImage) -> UIImage {
-        guard let ciImage = CIImage(image: image) else { return image }
-        
-        let context = CIContext()
-        
-        // 약한 블러로 노이즈 제거
-        guard let blurFilter = CIFilter(name: "CIGaussianBlur") else { return image }
-        blurFilter.setValue(ciImage, forKey: kCIInputImageKey)
-        blurFilter.setValue(1.2, forKey: kCIInputRadiusKey)
-        guard let blurredImage = blurFilter.outputImage else { return image }
-        
-        // 선명도 회복
-        guard let sharpenFilter = CIFilter(name: "CIUnsharpMask") else { return image }
-        sharpenFilter.setValue(blurredImage, forKey: kCIInputImageKey)
-        sharpenFilter.setValue(1.0, forKey: kCIInputRadiusKey)
-        sharpenFilter.setValue(1.2, forKey: kCIInputIntensityKey)
-        guard let sharpenedImage = sharpenFilter.outputImage else { return image }
-        
-        guard let cgImage = context.createCGImage(sharpenedImage, from: ciImage.extent) else {
-            return image
-        }
-        
-        return UIImage(cgImage: cgImage)
     }
     
     // 이미지 저장 헬퍼 함수

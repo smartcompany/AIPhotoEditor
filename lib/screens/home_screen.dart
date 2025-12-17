@@ -267,34 +267,39 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    setState(() {
-      _isGenerating = true;
-    });
+    // 모델 다운로드 진행도 표시
+    await _showDownloadDialogIfNeeded('realesrgan_x2plus', () async {
+      setState(() {
+        _isGenerating = true;
+      });
 
-    try {
-      final enhancedPath = await _imageService.autoEnhance(_selectedImagePath!);
-
-      if (enhancedPath != null && mounted) {
-        _applyResultImage(enhancedPath);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('자동 보정이 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 3),
-          ),
+      try {
+        final enhancedPath = await _imageService.autoEnhance(
+          _selectedImagePath!,
         );
-      } else {
-        _showError('이미지 보정에 실패했습니다.');
+
+        if (enhancedPath != null && mounted) {
+          _applyResultImage(enhancedPath);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('자동 보정이 완료되었습니다. 되돌리기 버튼으로 이전 버전으로 돌아갈 수 있습니다.'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        } else {
+          _showError('이미지 보정에 실패했습니다.');
+        }
+      } catch (e) {
+        _showError('오류 발생: $e');
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isGenerating = false;
+          });
+        }
       }
-    } catch (e) {
-      _showError('오류 발생: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isGenerating = false;
-        });
-      }
-    }
+    });
   }
 
   Future<void> _performPortraitMode() async {
